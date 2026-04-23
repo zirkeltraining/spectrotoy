@@ -14,6 +14,22 @@ class SpectrographDiagnostic {
         this.awaitingBinaryScan = false;
         this.textBuffer = '';
         this.binaryBuffer = new Uint8Array();
+        this.baudRate = 9600;
+        this.pendingBaudRate = 9600;
+        this.scanStartTime = 0;
+        this.lastBinaryByteTime = 0;
+        this.lastScanCommandTime = 0;
+        this.consecutiveScanTimeouts = 0;
+        this.baudRateMap = {
+            115200: 0,
+            38400: 1,
+            19200: 2,
+            9600: 3,
+            4800: 4,
+            2400: 5,
+            1200: 6,
+            600: 7
+        };
         
         // Pixel to wavelength calibration (default linear calibration)
         // BTC100-2S operates 400-580nm range, 2048 pixels
@@ -43,60 +59,89 @@ class SpectrographDiagnostic {
         this.chart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: this.generateWavelengthLabels(),
                 datasets: [{
                     label: 'Spectral Intensity',
                     data: [],
-                    borderColor: '#667eea',
-                    backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                    borderColor: '#1f8fff',
+                    backgroundColor: 'rgba(31, 143, 255, 0.14)',
                     borderWidth: 2,
                     fill: true,
-                    tension: 0.4,
+                    tension: 0.18,
                     pointRadius: 0,
                     pointHoverRadius: 0,
-                    spanGaps: false
+                    spanGaps: false,
+                    parsing: false
                 }]
             },
             options: {
                 responsive: true,
-                maintainAspectRatio: true,
+                maintainAspectRatio: false,
                 animation: false,
                 plugins: {
                     legend: {
                         display: true,
-                        position: 'top'
+                        position: 'top',
+                        align: 'start',
+                        labels: {
+                            color: '#c8d4e3',
+                            usePointStyle: true,
+                            boxWidth: 10
+                        }
+                    },
+                    tooltip: {
+                        intersect: false,
+                        mode: 'index',
+                        callbacks: {
+                            title: (items) => {
+                                if (!items.length) return '';
+                                return `${items[0].parsed.x.toFixed(1)} nm`;
+                            },
+                            label: (item) => `Intensity: ${Math.round(item.parsed.y).toLocaleString()} counts`
+                        }
                     }
                 },
                 scales: {
                     x: {
+                        type: 'linear',
                         title: {
                             display: true,
-                            text: 'Wavelength (nm)'
+                            text: 'Wavelength (nm)',
+                            color: '#8ea2b8'
                         },
                         min: this.wavelengthMin,
-                        max: this.wavelengthMax
+                        max: this.wavelengthMax,
+                        ticks: {
+                            color: '#8ea2b8',
+                            maxTicksLimit: 10
+                        },
+                        grid: {
+                            color: 'rgba(110, 129, 154, 0.14)'
+                        },
+                        border: {
+                            color: 'rgba(110, 129, 154, 0.25)'
+                        }
                     },
                     y: {
                         title: {
                             display: true,
-                            text: 'Intensity (counts)'
+                            text: 'Intensity (counts)',
+                            color: '#8ea2b8'
                         },
                         min: 0,
-                        max: 65535
+                        beginAtZero: true,
+                        ticks: {
+                            color: '#8ea2b8'
+                        },
+                        grid: {
+                            color: 'rgba(110, 129, 154, 0.12)'
+                        },
+                        border: {
+                            color: 'rgba(110, 129, 154, 0.25)'
+                        }
                     }
                 }
             }
         });
-    }
-
-    generateWavelengthLabels() {
-        const labels = [];
-        const step = Math.floor(this.pixelCount / 50); // ~50 labels
-        for (let i = 0; i < this.pixelCount; i += step) {
-            const wavelength = this.pixelToWavelength(i);
-            labels.push(wavelength.toFixed(0));
-        }
-        return labels;
     }
 
     pixelToWavelength(pixel) {
@@ -134,24 +179,14 @@ class SpectrographDiagnostic {
                 return;
             }
 
-            // Request port from user
-            this.port = await navigator.serial.requestPort();
-            
-            // Open port with BTC100-2S settings: 9600 baud, 8n1
-            await this.port.open({
-                baudRate: 9600,
-                dataBits: 8,
-                stopBits: 1,
-                parity: 'none',
-                flowControl: 'none'
-            });
+            if (!this.port) {
+                this.port = await navigator.serial.requestPort();
+            }
 
-            this.isConnected = true;
-            this.reader = this.port.readable.getReader();
-            this.writer = this.port.writable.getWriter();
+            await this.openCurrentPort();
             
             this.updateConnectionUI(true);
-            this.log('Connected to spectrometer', 'success');
+            this.log(`Connected to spectrometer at ${this.baudRate} baud`, 'success');
             
             // Start listening for data
             this.startReadingData();
@@ -170,18 +205,7 @@ class SpectrographDiagnostic {
     async disconnectDevice() {
         try {
             this.isContinuousScanning = false;
-            
-            if (this.reader) {
-                this.reader.cancel();
-            }
-            
-            if (this.writer) {
-                this.writer.close();
-            }
-            
-            if (this.port) {
-                await this.port.close();
-            }
+            await this.closeCurrentPort();
             
             this.isConnected = false;
             this.updateConnectionUI(false);
@@ -199,6 +223,7 @@ class SpectrographDiagnostic {
         const disconnectBtn = document.getElementById('disconnectBtn');
         const scanBtn = document.getElementById('scanBtn');
         const continuousScanBtn = document.getElementById('continuousScanBtn');
+        const applyBaudBtn = document.getElementById('applyBaudBtn');
 
         if (connected) {
             indicator.className = 'status-indicator connected';
@@ -207,6 +232,7 @@ class SpectrographDiagnostic {
             disconnectBtn.disabled = false;
             scanBtn.disabled = false;
             continuousScanBtn.disabled = false;
+            if (applyBaudBtn) applyBaudBtn.disabled = false;
         } else {
             indicator.className = 'status-indicator disconnected';
             status.textContent = 'Disconnected';
@@ -214,6 +240,51 @@ class SpectrographDiagnostic {
             disconnectBtn.disabled = true;
             scanBtn.disabled = true;
             continuousScanBtn.disabled = true;
+            if (applyBaudBtn) applyBaudBtn.disabled = true;
+        }
+    }
+
+    async openCurrentPort() {
+        await this.port.open({
+            baudRate: this.pendingBaudRate,
+            dataBits: 8,
+            stopBits: 1,
+            parity: 'none',
+            flowControl: 'none'
+        });
+
+        this.baudRate = this.pendingBaudRate;
+        this.isConnected = true;
+        this.reader = this.port.readable.getReader();
+        this.writer = this.port.writable.getWriter();
+    }
+
+    async closeCurrentPort() {
+        this.isConnected = false;
+        this.resetBinaryScanState();
+
+        if (this.reader) {
+            try {
+                await this.reader.cancel();
+            } catch (error) {
+                // Ignore cancellation races during disconnect/reopen.
+            }
+            this.reader.releaseLock();
+            this.reader = null;
+        }
+
+        if (this.writer) {
+            try {
+                await this.writer.close();
+            } catch (error) {
+                // Ignore writer shutdown races during disconnect/reopen.
+            }
+            this.writer.releaseLock();
+            this.writer = null;
+        }
+
+        if (this.port?.readable || this.port?.writable) {
+            await this.port.close();
         }
     }
 
@@ -259,13 +330,15 @@ class SpectrographDiagnostic {
                         }
                     }
                 } else {
-                    const remainder = this.extractAsciiLines(bytes);
-                    if (remainder.length > 0) {
-                        const buffer = new Uint8Array(this.binaryBuffer.length + remainder.length);
+                    if (this.awaitingBinaryScan) {
+                        this.lastBinaryByteTime = Date.now();
+                        const buffer = new Uint8Array(this.binaryBuffer.length + bytes.length);
                         buffer.set(this.binaryBuffer);
-                        buffer.set(remainder, this.binaryBuffer.length);
+                        buffer.set(bytes, this.binaryBuffer.length);
                         this.binaryBuffer = buffer;
                         this.tryParseBinaryBuffer();
+                    } else {
+                        this.handleIdleBinaryBytes(bytes);
                     }
                 }
             }
@@ -273,6 +346,31 @@ class SpectrographDiagnostic {
             if (this.isConnected) {
                 this.log(`Read error: ${error.message}`, 'error');
             }
+        }
+    }
+
+    resetBinaryScanState() {
+        this.awaitingBinaryScan = false;
+        this.binaryBuffer = new Uint8Array();
+        this.scanStartTime = 0;
+        this.lastBinaryByteTime = 0;
+    }
+
+    getScanTimeoutMs() {
+        const integrationTime = parseInt(document.getElementById('integrationTime')?.value, 10) || 100;
+        return Math.max(1200, integrationTime * 4 + 1200);
+    }
+
+    recoverFromScanTimeout(reason) {
+        this.consecutiveScanTimeouts += 1;
+        this.log(`Binary scan recovery: ${reason}`, 'error');
+        this.resetBinaryScanState();
+        this.textBuffer = '';
+
+        if (this.consecutiveScanTimeouts >= 3 && this.isContinuousScanning) {
+            this.isContinuousScanning = false;
+            document.getElementById('continuousScanBtn').textContent = 'Start Continuous';
+            this.log('Continuous scan stopped after repeated recovery events', 'error');
         }
     }
 
@@ -321,6 +419,31 @@ class SpectrographDiagnostic {
         return bytes.slice(offset);
     }
 
+    handleIdleBinaryBytes(bytes) {
+        this.textBuffer += new TextDecoder().decode(bytes);
+
+        while (this.textBuffer.includes('\r\n') || this.textBuffer.includes('\n')) {
+            let lineEnd = this.textBuffer.indexOf('\r\n');
+            if (lineEnd === -1) {
+                lineEnd = this.textBuffer.indexOf('\n');
+            }
+            if (lineEnd === -1) break;
+
+            const line = this.textBuffer.substring(0, lineEnd).trim();
+            this.textBuffer = this.textBuffer.substring(lineEnd + (this.textBuffer[lineEnd] === '\r' ? 2 : 1));
+            if (line) {
+                this.processResponse(line);
+            }
+        }
+
+        // Binary scans may be followed by a few non-line-terminated tail bytes.
+        // They are not a new scan and must not be fed back into the binary parser.
+        if (this.textBuffer.length > 64) {
+            this.log(`Discarded ${this.textBuffer.length} idle byte(s) after binary scan`, 'info');
+            this.textBuffer = '';
+        }
+    }
+
     parseASCIIData(values) {
         // Handle both array input and string input for flexibility
         let data = Array.isArray(values) ? values : values.trim().split(/\s+/).map(v => parseInt(v, 10));
@@ -354,12 +477,18 @@ class SpectrographDiagnostic {
     tryParseBinaryBuffer() {
         const result = this.parseBinaryData(this.binaryBuffer);
         if (result.complete) {
-            this.binaryBuffer = this.binaryBuffer.slice(result.consumedBytes);
+            const trailingBytes = this.binaryBuffer.slice(result.consumedBytes);
             this.currentData = result.values;
-            this.awaitingBinaryScan = false;
+            this.resetBinaryScanState();
+            this.consecutiveScanTimeouts = 0;
             this.log('Binary scan completed', 'success');
             this.updateChart();
             this.updateStatistics();
+            if (trailingBytes.length > 0) {
+                this.handleIdleBinaryBytes(trailingBytes);
+            }
+        } else if (this.binaryBuffer.length > this.pixelCount * 4) {
+            this.recoverFromScanTimeout(`discarded oversized binary buffer (${this.binaryBuffer.length} bytes)`);
         }
     }
 
@@ -410,14 +539,14 @@ class SpectrographDiagnostic {
         }
 
         try {
-            const labels = [];
-            for (let i = 0; i < this.currentData.length; i += Math.max(1, Math.floor(this.currentData.length / 100))) {
-                const wavelength = this.pixelToWavelengthCalibrated(i);
-                labels.push(wavelength.toFixed(1));
-            }
+            const chartData = this.currentData.map((value, index) => ({
+                x: this.pixelToWavelengthCalibrated(index),
+                y: value
+            }));
 
-            this.chart.data.labels = labels;
-            this.chart.data.datasets[0].data = this.currentData;
+            this.chart.data.datasets[0].data = chartData;
+            this.chart.options.scales.x.min = this.pixelToWavelengthCalibrated(0);
+            this.chart.options.scales.x.max = this.pixelToWavelengthCalibrated(this.currentData.length - 1);
             this.chart.options.scales.y.suggestedMin = 0;
             this.chart.options.scales.y.max = undefined;
             this.chart.options.scales.y.beginAtZero = true;
@@ -451,7 +580,7 @@ class SpectrographDiagnostic {
     }
 
     async performScan() {
-        this.writeCommand('S');
+        this.sendCommand('S');
     }
 
     async toggleContinuousScan() {
@@ -471,8 +600,22 @@ class SpectrographDiagnostic {
 
     async continuousScanLoop() {
         while (this.isContinuousScanning && this.isConnected) {
-            this.writeCommand('S');
-            await new Promise(resolve => setTimeout(resolve, 500));
+            if (this.awaitingBinaryScan) {
+                const now = Date.now();
+                const timeoutMs = this.getScanTimeoutMs();
+                const lastActivity = Math.max(this.lastBinaryByteTime, this.scanStartTime);
+                if (lastActivity && now - lastActivity > timeoutMs) {
+                    this.recoverFromScanTimeout(`scan timed out after ${now - this.scanStartTime} ms`);
+                }
+            }
+
+            if (!this.awaitingBinaryScan) {
+                this.sendCommand('S');
+            }
+
+            const integrationTime = parseInt(document.getElementById('integrationTime').value, 10) || 100;
+            const pollingDelay = this.asciiMode ? 250 : Math.max(80, Math.min(400, Math.round(integrationTime * 0.75)));
+            await new Promise(resolve => setTimeout(resolve, pollingDelay));
         }
     }
 
@@ -488,6 +631,9 @@ class SpectrographDiagnostic {
         } else if (command === 'S' && !this.asciiMode) {
             this.awaitingBinaryScan = true;
             this.binaryBuffer = new Uint8Array();
+            this.scanStartTime = Date.now();
+            this.lastBinaryByteTime = this.scanStartTime;
+            this.lastScanCommandTime = this.scanStartTime;
             this.log('Awaiting binary scan data...', 'info');
         }
         this.writeCommand(command);
@@ -510,6 +656,54 @@ class SpectrographDiagnostic {
 
         this.writeCommand(`${param}${value}`);
     }
+
+    async applyBaudRate() {
+        const baudSelect = document.getElementById('baudRate');
+        const selectedBaud = parseInt(baudSelect.value, 10);
+        const deviceCode = this.baudRateMap[selectedBaud];
+
+        if (!(selectedBaud in this.baudRateMap)) {
+            this.log(`Unsupported baud rate: ${selectedBaud}`, 'error');
+            return;
+        }
+
+        if (!this.isConnected) {
+            this.pendingBaudRate = selectedBaud;
+            this.log(`Reconnect at ${selectedBaud} baud only if the device is already configured for it`, 'info');
+            return;
+        }
+
+        if (this.awaitingBinaryScan || this.isContinuousScanning) {
+            this.log('Stop acquisition before changing baud rate', 'error');
+            return;
+        }
+
+        if (selectedBaud === this.baudRate) {
+            this.log(`Already using ${selectedBaud} baud`, 'info');
+            return;
+        }
+
+        this.log(`Requesting device baud change to ${selectedBaud}`, 'info');
+
+        try {
+            await this.writeCommand(`K${deviceCode}`);
+            await new Promise(resolve => setTimeout(resolve, 250));
+
+            this.pendingBaudRate = selectedBaud;
+            await this.closeCurrentPort();
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await this.openCurrentPort();
+
+            this.updateConnectionUI(true);
+            this.log(`Reconnected at ${selectedBaud} baud`, 'success');
+            this.startReadingData();
+        } catch (error) {
+            this.isConnected = false;
+            this.updateConnectionUI(false);
+            this.log(`Baud rate transition failed: ${error.message}`, 'error');
+            this.log('If the device stopped responding, power-cycle it and reconnect at 9600 baud', 'error');
+        }
+    }
 }
 
 // Global instance
@@ -527,6 +721,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.sendCommand = (cmd) => spectrograph.sendCommand(cmd);
     window.queryValue = (param) => spectrograph.queryValue(param);
     window.setSetting = (param) => spectrograph.setSetting(param);
+    window.applyBaudRate = () => spectrograph.applyBaudRate();
 
     // Setup resizable divider
     const divider = document.getElementById('resizableDivider');

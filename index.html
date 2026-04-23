@@ -5,7 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BTC100-2S Spectrometer Diagnostic</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg: #0a1524;
+            --bg-accent: #0f2236;
+            --panel: #f4f7fb;
+            --panel-border: #d8e1ec;
+            --card: #ffffff;
+            --card-border: #dde6f0;
+            --text: #10233a;
+            --muted: #6d8298;
+            --brand: #1f8fff;
+            --brand-strong: #0f6fd1;
+            --success: #17a673;
+            --danger: #d64545;
+            --warning: #d39b11;
+            --shadow: 0 24px 60px rgba(6, 18, 33, 0.28);
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -13,91 +33,117 @@
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            font-family: 'Manrope', 'Segoe UI', sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(31, 143, 255, 0.16), transparent 28%),
+                radial-gradient(circle at top right, rgba(87, 201, 255, 0.12), transparent 22%),
+                linear-gradient(180deg, #08111d 0%, #0c1725 48%, #09131f 100%);
+            height: 100vh;
+            padding: 24px;
+            color: var(--text);
             overflow: hidden;
         }
 
+        .container {
+            max-width: 1460px;
+            margin: 0 auto;
+            background: linear-gradient(180deg, rgba(248, 251, 255, 0.98), rgba(240, 245, 251, 0.98));
+            border: 1px solid rgba(206, 219, 232, 0.55);
+            border-radius: 22px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            height: calc(100vh - 48px);
+            display: flex;
+            flex-direction: column;
+        }
+
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
+            background:
+                linear-gradient(135deg, rgba(12, 29, 47, 0.98) 0%, rgba(16, 40, 63, 0.98) 64%, rgba(15, 111, 209, 0.92) 100%);
+            color: #f7fbff;
+            padding: 16px 22px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 18px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .header-copy {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .eyebrow {
+            font-size: 0.68rem;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: rgba(199, 220, 244, 0.78);
+            font-weight: 700;
         }
 
         .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
+            font-size: clamp(1.25rem, 2.2vw, 1.8rem);
+            line-height: 1.05;
+            font-weight: 800;
+            letter-spacing: -0.04em;
         }
 
         .header p {
-            opacity: 0.9;
-            font-size: 1.1em;
+            opacity: 0.88;
+            font-size: 0.86rem;
+            color: rgba(214, 229, 244, 0.92);
+            max-width: 760px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
-        .main-content {
-            display: grid;
-            grid-template-columns: 300px 1fr;
-            gap: 20px;
-            padding: 30px;
-            min-height: 600px;
+        .header-status {
+            min-width: 190px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 14px;
+            padding: 10px 12px;
+            backdrop-filter: blur(10px);
         }
 
-        .resizable-divider {
-            grid-column: 1 / 3;
-            position: absolute;
-            width: 4px;
-            height: 100%;
-            cursor: col-resize;
-            background: linear-gradient(90deg, transparent 0%, #667eea 50%, transparent 100%);
-            opacity: 0;
-            transition: opacity 0.2s;
-            left: 320px;
-            top: auto;
-            z-index: 100;
-        }
-
-        .resizable-divider:hover,
-        .resizable-divider.dragging {
-            opacity: 1;
-            background: linear-gradient(90deg, transparent 0%, #667eea 50%, transparent 100%);
+        .header-status-label {
+            display: block;
+            font-size: 0.74rem;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            color: rgba(192, 213, 236, 0.78);
+            margin-bottom: 8px;
+            font-weight: 700;
         }
 
         .main-content-wrapper {
             display: grid;
-            grid-template-columns: 300px 4px 1fr;
+            grid-template-columns: 320px 8px 1fr;
             gap: 0;
-            padding: 30px;
-            min-height: 600px;
+            padding: 16px;
+            min-height: 0;
+            flex: 1;
             position: relative;
-        }
-
-        .control-panel {
-            grid-column: 1;
+            overflow: hidden;
         }
 
         .resizable-divider {
             grid-column: 2;
+            width: 8px;
             cursor: col-resize;
-            background: linear-gradient(90deg, transparent 0%, #ccc 50%, transparent 100%);
+            background: linear-gradient(90deg, transparent 0%, rgba(143, 161, 182, 0.18) 50%, transparent 100%);
             opacity: 0;
             transition: opacity 0.2s, background 0.2s;
+            touch-action: none;
         }
 
         .resizable-divider:hover,
         .resizable-divider.dragging {
             opacity: 1;
-            background: linear-gradient(90deg, transparent 0%, #667eea 50%, transparent 100%);
+            background: linear-gradient(90deg, transparent 0%, rgba(31, 143, 255, 0.5) 50%, transparent 100%);
         }
 
         .content-area {
@@ -105,59 +151,70 @@
         }
 
         .control-panel {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 20px;
-            border: 1px solid #e9ecef;
-            height: fit-content;
+            grid-column: 1;
+            background: linear-gradient(180deg, #eef3f8 0%, #f7fafd 100%);
+            border-radius: 18px;
+            padding: 18px;
+            border: 1px solid var(--panel-border);
+            height: 100%;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+            overflow-y: auto;
+            min-height: 0;
         }
 
         .control-panel h2 {
-            font-size: 1.3em;
-            margin-bottom: 20px;
-            color: #333;
+            font-size: 1.1rem;
+            margin-bottom: 18px;
+            color: var(--text);
+            letter-spacing: -0.02em;
         }
 
         .control-group {
-            margin-bottom: 20px;
+            margin-bottom: 18px;
         }
 
         .control-group label {
             display: block;
-            font-weight: 600;
+            font-weight: 700;
             margin-bottom: 8px;
-            color: #555;
-            font-size: 0.95em;
+            color: var(--muted);
+            font-size: 0.84rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
         }
 
         .control-group input,
         .control-group select,
         .control-group button {
             width: 100%;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 0.95em;
+            padding: 12px 14px;
+            border: 1px solid #c9d5e3;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            background: #fff;
+            color: var(--text);
         }
 
         .control-group input:focus,
         .control-group select:focus {
             outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: var(--brand);
+            box-shadow: 0 0 0 4px rgba(31, 143, 255, 0.12);
         }
 
         button {
-            background: #667eea;
+            background: linear-gradient(180deg, var(--brand) 0%, var(--brand-strong) 100%);
             color: white;
             cursor: pointer;
             border: none;
-            font-weight: 600;
-            transition: background 0.3s, transform 0.1s;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+            box-shadow: 0 10px 18px rgba(15, 111, 209, 0.22);
         }
 
         button:hover:not(:disabled) {
-            background: #5568d3;
+            filter: brightness(1.04);
             transform: translateY(-1px);
         }
 
@@ -166,9 +223,10 @@
         }
 
         button:disabled {
-            background: #ccc;
+            background: linear-gradient(180deg, #b7c2ce 0%, #a2afbc 100%);
             cursor: not-allowed;
             opacity: 0.6;
+            box-shadow: none;
         }
 
         .status-indicator {
@@ -178,14 +236,15 @@
             border-radius: 50%;
             margin-right: 8px;
             vertical-align: middle;
+            box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.6);
         }
 
         .status-indicator.disconnected {
-            background: #dc3545;
+            background: var(--danger);
         }
 
         .status-indicator.connected {
-            background: #28a745;
+            background: var(--success);
             animation: pulse 2s infinite;
         }
 
@@ -195,112 +254,161 @@
         }
 
         .status-text {
-            font-size: 0.9em;
+            font-size: 0.9rem;
             margin-top: 10px;
-            padding: 10px;
-            background: white;
-            border-radius: 4px;
-            border-left: 4px solid #ffc107;
-            color: #333;
+            padding: 12px 14px;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 12px;
+            border: 1px solid #d9e4ef;
+            color: var(--muted);
         }
 
         .content-area {
             display: flex;
             flex-direction: column;
-            gap: 20px;
+            gap: 14px;
+            padding-left: 18px;
+            min-height: 0;
+            overflow: hidden;
         }
 
         .chart-container {
-            background: white;
-            border: 1px solid #e9ecef;
-            border-radius: 8px;
-            padding: 20px;
+            background:
+                linear-gradient(180deg, rgba(14, 26, 40, 0.98) 0%, rgba(12, 23, 36, 0.98) 100%);
+            border: 1px solid rgba(41, 58, 76, 0.9);
+            border-radius: 18px;
+            padding: 16px 16px 14px;
             flex: 1;
-            min-height: 400px;
+            min-height: 0;
             position: relative;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chart-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 12px;
         }
 
         .chart-container h2 {
-            font-size: 1.2em;
-            margin-bottom: 15px;
-            color: #333;
+            font-size: 1rem;
+            margin-bottom: 2px;
+            color: #f1f7ff;
+            letter-spacing: -0.02em;
+        }
+
+        .chart-subtitle {
+            font-size: 0.82rem;
+            color: #8ea2b8;
+        }
+
+        .chart-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+
+        .chart-actions button {
+            width: auto;
+            min-width: 144px;
+            padding: 10px 14px;
+            border-radius: 10px;
+            box-shadow: 0 8px 16px rgba(15, 111, 209, 0.18);
+        }
+
+        .chart-canvas-wrap {
+            position: relative;
+            flex: 1;
+            min-height: 200px;
         }
 
         #spectrumChart {
-            max-height: 350px;
+            width: 100%;
+            height: 100%;
         }
 
         .info-panel {
             display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 15px;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            flex-shrink: 0;
         }
 
         .info-card {
-            background: white;
-            border: 1px solid #e9ecef;
-            border-radius: 8px;
-            padding: 15px;
-            text-align: center;
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 14px 16px;
+            text-align: left;
+            box-shadow: 0 14px 30px rgba(18, 31, 46, 0.06);
         }
 
         .info-card h3 {
-            font-size: 0.9em;
-            color: #666;
-            margin-bottom: 8px;
+            font-size: 0.78rem;
+            color: var(--muted);
+            margin-bottom: 10px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.12em;
         }
 
         .info-card .value {
-            font-size: 1.8em;
-            font-weight: bold;
-            color: #667eea;
+            font-size: 1.6rem;
+            font-weight: 800;
+            color: var(--text);
+            letter-spacing: -0.04em;
         }
 
         .info-card .unit {
-            font-size: 0.8em;
-            color: #999;
+            font-size: 0.8rem;
+            color: var(--muted);
             margin-top: 4px;
         }
 
         .log-container {
-            background: #f8f9fa;
-            border: 1px solid #e9ecef;
-            border-radius: 8px;
-            padding: 15px;
-            max-height: 200px;
+            background: rgba(255, 255, 255, 0.84);
+            border: 1px solid #dbe5ef;
+            border-radius: 14px;
+            padding: 14px;
+            max-height: 220px;
             overflow-y: auto;
             font-family: 'Monaco', 'Courier New', monospace;
-            font-size: 0.85em;
+            font-size: 0.82rem;
         }
 
         .log-entry {
-            margin-bottom: 5px;
-            padding: 5px;
-            border-left: 3px solid #ddd;
-            padding-left: 10px;
+            margin-bottom: 6px;
+            padding: 8px 10px;
+            border-left: 3px solid #d4dde7;
+            padding-left: 12px;
+            background: rgba(246, 249, 252, 0.9);
+            border-radius: 0 10px 10px 0;
         }
 
         .log-entry.command {
-            border-left-color: #667eea;
-            color: #667eea;
+            border-left-color: var(--brand);
+            color: var(--brand-strong);
             font-weight: 600;
         }
 
         .log-entry.response {
-            border-left-color: #28a745;
-            color: #28a745;
+            border-left-color: var(--success);
+            color: #0f8c61;
         }
 
         .log-entry.error {
-            border-left-color: #dc3545;
-            color: #dc3545;
+            border-left-color: var(--danger);
+            color: #c53939;
         }
 
         .log-entry.info {
-            border-left-color: #17a2b8;
-            color: #17a2b8;
+            border-left-color: #3f7cc8;
+            color: #2a6bbd;
         }
 
         .button-group {
@@ -314,14 +422,14 @@
         }
 
         .section-title {
-            font-size: 1em;
-            font-weight: 600;
-            color: #333;
-            margin-top: 20px;
-            margin-bottom: 10px;
+            font-size: 0.78rem;
+            font-weight: 800;
+            color: var(--muted);
+            margin-top: 22px;
+            margin-bottom: 12px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            border-bottom: 2px solid #667eea;
+            letter-spacing: 0.14em;
+            border-bottom: 1px solid #d5e0eb;
             padding-bottom: 8px;
         }
 
@@ -338,8 +446,18 @@
         }
 
         @media (max-width: 1024px) {
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .header p {
+                white-space: normal;
+            }
+
             .main-content-wrapper {
                 grid-template-columns: 1fr;
+                overflow: auto;
             }
 
             .resizable-divider {
@@ -348,10 +466,23 @@
 
             .control-panel {
                 grid-column: 1;
+                height: auto;
+                overflow: visible;
             }
 
             .content-area {
                 grid-column: 1;
+                padding-left: 0;
+                overflow: visible;
+            }
+
+            .chart-header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .chart-actions {
+                width: 100%;
             }
         }
 
@@ -363,25 +494,57 @@
             .header h1 {
                 font-size: 1.8em;
             }
+
+            body {
+                padding: 14px;
+                height: auto;
+                min-height: 100vh;
+                overflow: auto;
+            }
+
+            .container {
+                border-radius: 18px;
+                height: auto;
+            }
+
+            .header,
+            .main-content-wrapper {
+                padding: 16px;
+            }
+
+            .header p {
+                white-space: normal;
+            }
+
+            .chart-actions {
+                flex-direction: column;
+            }
+
+            .chart-actions button {
+                width: 100%;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🔬 BTC100-2S Spectrometer Diagnostic</h1>
-            <p>Real-time spectral data acquisition and visualization via WebSerial</p>
+            <div class="header-copy">
+                <span class="eyebrow">Spectrometer Console</span>
+                <h1>BTC100-2S Spectral Diagnostics</h1>
+                <p>WebSerial acquisition, scan control, and live spectrum analysis in a cleaner operator dashboard.</p>
+            </div>
+            <div class="header-status">
+                <span class="header-status-label">System Link</span>
+                <span class="status-indicator disconnected" id="statusIndicator"></span>
+                <span id="connectionStatus">Disconnected</span>
+            </div>
         </div>
 
         <div class="main-content-wrapper">
             <!-- Control Panel -->
             <div class="control-panel">
                 <h2>Connection</h2>
-                
-                <div class="control-group">
-                    <span class="status-indicator disconnected" id="statusIndicator"></span>
-                    <span id="connectionStatus">Disconnected</span>
-                </div>
 
                 <button id="connectBtn" onclick="connectDevice()">Connect Device</button>
                 <button id="disconnectBtn" onclick="disconnectDevice()" disabled style="margin-top: 10px;">Disconnect</button>
@@ -420,10 +583,20 @@
                     <button onclick="setSetting('A')" style="margin-top: 10px;">Set Average</button>
                 </div>
 
-                <div class="section-title">Acquisition</div>
-
-                <button id="scanBtn" onclick="performScan()" disabled>Acquire Scan</button>
-                <button id="continuousScanBtn" onclick="toggleContinuousScan()" disabled style="margin-top: 10px;">Start Continuous</button>
+                <div class="control-group">
+                    <label for="baudRate">Serial Baud Rate</label>
+                    <select id="baudRate">
+                        <option value="115200">115200</option>
+                        <option value="38400">38400</option>
+                        <option value="19200">19200</option>
+                        <option value="9600" selected>9600</option>
+                        <option value="4800">4800</option>
+                        <option value="2400">2400</option>
+                        <option value="1200">1200</option>
+                        <option value="600">600</option>
+                    </select>
+                    <button id="applyBaudBtn" onclick="applyBaudRate()" style="margin-top: 10px;" disabled>Apply Baud Rate</button>
+                </div>
 
                 <div class="section-title">Log</div>
                 <div class="log-container" id="logContainer"></div>
@@ -436,8 +609,19 @@
             <div class="content-area">
                 <!-- Chart -->
                 <div class="chart-container">
-                    <h2>Spectral Data</h2>
-                    <canvas id="spectrumChart"></canvas>
+                    <div class="chart-header">
+                        <div>
+                            <h2>Spectral Data</h2>
+                            <div class="chart-subtitle">Live intensity profile across the calibrated wavelength range.</div>
+                        </div>
+                        <div class="chart-actions">
+                            <button id="scanBtn" onclick="performScan()" disabled>Acquire Scan</button>
+                            <button id="continuousScanBtn" onclick="toggleContinuousScan()" disabled>Start Continuous</button>
+                        </div>
+                    </div>
+                    <div class="chart-canvas-wrap">
+                        <canvas id="spectrumChart"></canvas>
+                    </div>
                 </div>
 
                 <!-- Info Panel -->
