@@ -19,6 +19,7 @@ class SpectrographDiagnostic {
         this.scanStartTime = 0;
         this.lastBinaryByteTime = 0;
         this.lastScanCommandTime = 0;
+        this.lastPreviewRenderTime = 0;
         this.consecutiveScanTimeouts = 0;
         this.baudRateMap = {
             115200: 0,
@@ -71,6 +72,15 @@ class SpectrographDiagnostic {
                     pointHoverRadius: 0,
                     spanGaps: false,
                     parsing: false
+                }, {
+                    label: 'Scan Cursor',
+                    data: [],
+                    borderColor: '#ffd166',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    pointHoverRadius: 0,
+                    fill: false,
+                    parsing: false
                 }]
             },
             options: {
@@ -85,7 +95,8 @@ class SpectrographDiagnostic {
                         labels: {
                             color: '#c8d4e3',
                             usePointStyle: true,
-                            boxWidth: 10
+                            boxWidth: 10,
+                            filter: (legendItem) => legendItem.text !== 'Scan Cursor'
                         }
                     },
                     tooltip: {
@@ -354,6 +365,7 @@ class SpectrographDiagnostic {
         this.binaryBuffer = new Uint8Array();
         this.scanStartTime = 0;
         this.lastBinaryByteTime = 0;
+        this.lastPreviewRenderTime = 0;
     }
 
     getScanTimeoutMs() {
@@ -467,7 +479,7 @@ class SpectrographDiagnostic {
             
             this.currentData = data;
             this.log('Chart data updated successfully', 'success');
-            this.updateChart();
+            this.updateChart({ final: true });
             this.updateStatistics();
         } else {
             this.log(`Data incomplete: received ${data.length} but need at least ${Math.floor(this.pixelCount * 0.95)}`, 'error');
@@ -482,14 +494,36 @@ class SpectrographDiagnostic {
             this.resetBinaryScanState();
             this.consecutiveScanTimeouts = 0;
             this.log('Binary scan completed', 'success');
-            this.updateChart();
+            this.updateChart({ final: true });
             this.updateStatistics();
             if (trailingBytes.length > 0) {
                 this.handleIdleBinaryBytes(trailingBytes);
             }
+        } else if (result.values.length > 32) {
+            const now = Date.now();
+            if (now - this.lastPreviewRenderTime >= 60) {
+                this.lastPreviewRenderTime = now;
+                this.updateChart({
+                    data: this.buildProgressivePreviewData(result.values),
+                    final: false,
+                    hotIndex: result.values.length
+                });
+            }
         } else if (this.binaryBuffer.length > this.pixelCount * 4) {
             this.recoverFromScanTimeout(`discarded oversized binary buffer (${this.binaryBuffer.length} bytes)`);
         }
+    }
+
+    buildProgressivePreviewData(partialValues) {
+        const baseline = Array.isArray(this.currentData) && this.currentData.length === this.pixelCount
+            ? [...this.currentData]
+            : new Array(this.pixelCount).fill(0);
+
+        for (let i = 0; i < partialValues.length && i < baseline.length; i += 1) {
+            baseline[i] = partialValues[i];
+        }
+
+        return baseline;
     }
 
     parseBinaryData(buffer) {
@@ -532,30 +566,48 @@ class SpectrographDiagnostic {
         };
     }
 
-    updateChart() {
-        if (!this.currentData || this.currentData.length === 0) {
+    updateChart(options = {}) {
+        const { data = this.currentData, final = true, hotIndex = null } = options;
+
+        if (!data || data.length === 0) {
             this.log('No data to display in chart', 'error');
             return;
         }
 
         try {
-            const chartData = this.currentData.map((value, index) => ({
+            const chartData = data.map((value, index) => ({
                 x: this.pixelToWavelengthCalibrated(index),
                 y: value
             }));
 
             this.chart.data.datasets[0].data = chartData;
+            this.chart.data.datasets[1].data = this.buildCursorLine(data, hotIndex);
             this.chart.options.scales.x.min = this.pixelToWavelengthCalibrated(0);
-            this.chart.options.scales.x.max = this.pixelToWavelengthCalibrated(this.currentData.length - 1);
+            this.chart.options.scales.x.max = this.pixelToWavelengthCalibrated(this.pixelCount - 1);
             this.chart.options.scales.y.suggestedMin = 0;
             this.chart.options.scales.y.max = undefined;
             this.chart.options.scales.y.beginAtZero = true;
 
             this.chart.update('none');
-            this.log(`Chart rendered with ${this.currentData.length} points`, 'success');
+            if (final) {
+                this.log(`Chart rendered with ${data.length} points`, 'success');
+            }
         } catch (error) {
             this.log(`Chart update error: ${error.message}`, 'error');
         }
+    }
+
+    buildCursorLine(data, hotIndex) {
+        if (hotIndex === null || hotIndex < 0 || hotIndex >= this.pixelCount) {
+            return [];
+        }
+
+        const yMax = Math.max(1, ...data);
+        const x = this.pixelToWavelengthCalibrated(Math.min(hotIndex, this.pixelCount - 1));
+        return [
+            { x, y: 0 },
+            { x, y: yMax }
+        ];
     }
 
     updateStatistics() {
