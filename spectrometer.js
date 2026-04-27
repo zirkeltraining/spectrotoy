@@ -255,6 +255,13 @@ class SpectrographDiagnostic {
         }
     }
 
+    updateExportUI() {
+        const exportBtn = document.getElementById('exportCubeRamanBtn');
+        if (exportBtn) {
+            exportBtn.disabled = !(Array.isArray(this.currentData) && this.currentData.length > 0);
+        }
+    }
+
     async openCurrentPort() {
         await this.port.open({
             baudRate: this.pendingBaudRate,
@@ -479,6 +486,7 @@ class SpectrographDiagnostic {
             
             this.currentData = data;
             this.log('Chart data updated successfully', 'success');
+            this.updateExportUI();
             this.updateChart({ final: true });
             this.updateStatistics();
         } else {
@@ -494,6 +502,7 @@ class SpectrographDiagnostic {
             this.resetBinaryScanState();
             this.consecutiveScanTimeouts = 0;
             this.log('Binary scan completed', 'success');
+            this.updateExportUI();
             this.updateChart({ final: true });
             this.updateStatistics();
             if (trailingBytes.length > 0) {
@@ -709,6 +718,55 @@ class SpectrographDiagnostic {
         this.writeCommand(`${param}${value}`);
     }
 
+    buildCubeRamanCSV() {
+        if (!Array.isArray(this.currentData) || this.currentData.length === 0) {
+            throw new Error('No spectrum data available to export');
+        }
+
+        const laserWavelength = parseFloat(document.getElementById('laserWavelength')?.value);
+        const integrationTime = parseInt(document.getElementById('integrationTime')?.value, 10);
+        const averageCount = parseInt(document.getElementById('averageCount')?.value, 10);
+        const laserText = Number.isFinite(laserWavelength) ? `${laserWavelength} nm` : 'unknown';
+        const integrationText = Number.isFinite(integrationTime) ? `${integrationTime} ms` : 'unknown';
+        const averageText = Number.isFinite(averageCount) ? averageCount : 'unknown';
+
+        const lines = [
+            'CubeRaman-compatible export from SpectroToy',
+            `Laser wavelength: ${laserText}`,
+            `Integration time: ${integrationText}; scans averaged: ${averageText}`,
+            '',
+            'Wavelength,Averaged'
+        ];
+
+        this.currentData.forEach((intensity, pixel) => {
+            const wavelength = this.pixelToWavelengthCalibrated(pixel);
+            lines.push(`${wavelength.toFixed(3)},${Math.round(intensity)}`);
+        });
+
+        return lines.join('\n');
+    }
+
+    exportCubeRamanCSV() {
+        try {
+            const csv = this.buildCubeRamanCSV();
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const link = document.createElement('a');
+
+            link.href = url;
+            link.download = `spectrotoy-cuberaman-${timestamp}.csv`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+
+            this.log(`Exported CubeRaman CSV with ${this.currentData.length} rows`, 'success');
+        } catch (error) {
+            this.log(`Export failed: ${error.message}`, 'error');
+        }
+    }
+
     async applyBaudRate() {
         const baudSelect = document.getElementById('baudRate');
         const selectedBaud = parseInt(baudSelect.value, 10);
@@ -774,6 +832,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.queryValue = (param) => spectrograph.queryValue(param);
     window.setSetting = (param) => spectrograph.setSetting(param);
     window.applyBaudRate = () => spectrograph.applyBaudRate();
+    window.exportCubeRamanCSV = () => spectrograph.exportCubeRamanCSV();
 
     // Setup resizable divider
     const divider = document.getElementById('resizableDivider');

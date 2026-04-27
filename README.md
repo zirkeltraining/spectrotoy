@@ -15,6 +15,7 @@ A modern web-based diagnostic application for interfacing with the B&W Tek BTC10
 - ✅ **Continuous Scanning**: Acquire multiple spectra sequentially
 - ✅ **Integration Time Control**: Adjust sensor integration time (50-65000ms)
 - ✅ **Averaging**: Configure multi-sample averaging
+- ✅ **CubeRaman CSV Export**: Save wavelength/count data in SpectrumPro-compatible CSV format
 
 ## Hardware Requirements
 
@@ -56,6 +57,7 @@ A modern web-based diagnostic application for interfacing with the B&W Tek BTC10
    - Spectral data displays in the main chart
    - Peak wavelength and intensity appear in the statistics panel
    - All commands/responses logged in the control panel
+   - Click **"Export CSV"** after a scan to save a CubeRaman SpectrumPro-compatible file
 
 ## Device Communication Protocol
 
@@ -145,6 +147,15 @@ spectrograph.updateCalibration(404.2, 0.0865, 0.00000, 0.00000);
 2. For dim lights: increase Integration Time (e.g., 5000ms)
 3. For noisy data: increase Averaging count
 ```
+
+### 5. Export for CubeRaman SpectrumPro
+```
+1. Set Laser Wavelength to the Raman excitation wavelength, e.g. 532nm
+2. Acquire a scan
+3. Click "Export CSV"
+```
+
+The exported CSV always writes four metadata rows followed by a table headed `Wavelength,Averaged`. Wavelength values are calibrated nanometers, and intensity values are detector counts.
 
 ## Troubleshooting
 
@@ -255,7 +266,7 @@ spectrotoy/
 ## Future Enhancements
 
 - [ ] Binary mode improvements and testing
-- [ ] CSV export functionality
+- [x] CSV export functionality
 - [ ] Multi-point wavelength calibration UI
 - [ ] Background subtraction
 - [ ] Peak detection and labeling
