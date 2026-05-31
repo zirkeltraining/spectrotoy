@@ -202,6 +202,54 @@
             box-shadow: 0 0 0 4px rgba(31, 143, 255, 0.12);
         }
 
+        .control-group input[type="checkbox"] {
+            width: auto;
+            margin-right: 8px;
+            transform: translateY(1px);
+        }
+
+        .control-group input[type="range"] {
+            padding: 0;
+            border: none;
+            box-shadow: none;
+        }
+
+        .control-group input[type="file"] {
+            padding: 10px;
+            font-size: 0.82rem;
+        }
+
+        .control-inline {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .control-inline input,
+        .control-inline select {
+            flex: 1;
+        }
+
+        .control-value {
+            min-width: 54px;
+            color: var(--muted);
+            font-size: 0.84rem;
+            font-weight: 700;
+            text-align: right;
+        }
+
+        .analysis-summary {
+            margin-top: 10px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.86);
+            border: 1px solid #d9e4ef;
+            color: var(--muted);
+            font-size: 0.84rem;
+            line-height: 1.45;
+            white-space: pre-line;
+        }
+
         button {
             background: linear-gradient(180deg, var(--brand) 0%, var(--brand-strong) 100%);
             color: white;
@@ -569,6 +617,13 @@
                     <button onclick="queryValue('I')" style="margin-top: 10px;">Query Integration</button>
                 </div>
 
+                <div class="section-title">Data</div>
+
+                <div class="control-group">
+                    <label for="csvImportFile">Import Raw Scan CSV</label>
+                    <input type="file" id="csvImportFile" accept=".csv,text/csv">
+                </div>
+
                 <div class="section-title">Settings</div>
 
                 <div class="control-group">
@@ -602,6 +657,111 @@
                     </select>
                     <button id="applyBaudBtn" onclick="applyBaudRate()" style="margin-top: 10px;" disabled>Apply Baud Rate</button>
                 </div>
+
+                <div class="section-title">Raman Processing</div>
+
+                <div class="control-group">
+                    <div class="control-inline">
+                        <input type="checkbox" id="analysisEnabled" checked>
+                        <label for="analysisEnabled" style="margin-bottom: 0;">Enable Analysis</label>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label for="ramanMin">Raman Range (cm⁻¹)</label>
+                    <div class="control-inline">
+                        <input type="number" id="ramanMin" value="0" step="10">
+                        <input type="number" id="ramanMax" value="3400" step="10">
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-inline">
+                        <input type="checkbox" id="spikeEnabled" checked>
+                        <label for="spikeEnabled" style="margin-bottom: 0;">Remove Spikes</label>
+                    </div>
+                    <div class="control-inline" style="margin-top: 8px;">
+                        <input type="range" id="spikeThreshold" min="2" max="15" step="0.1" value="8.5">
+                        <span class="control-value" id="spikeThresholdValue">8.5</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label for="baselineMethod">Baseline</label>
+                    <select id="baselineMethod">
+                        <option value="snip" selected>SNIP</option>
+                        <option value="als">ALS</option>
+                        <option value="arpls">arPLS</option>
+                        <option value="none">None</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label for="snipIterations">SNIP Iterations</label>
+                    <div class="control-inline">
+                        <input type="range" id="snipIterations" min="5" max="100" step="1" value="11">
+                        <span class="control-value" id="snipIterationsValue">11</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label for="lambdaPower">ALS/arPLS λ (10ⁿ)</label>
+                    <div class="control-inline">
+                        <input type="range" id="lambdaPower" min="1" max="9" step="0.1" value="3.2">
+                        <span class="control-value" id="lambdaPowerValue">3.2</span>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label for="smoothingMethod">Smoothing</label>
+                    <select id="smoothingMethod">
+                        <option value="sg" selected>Savitzky-Golay</option>
+                        <option value="moving">Moving Average</option>
+                        <option value="none">None</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label for="smoothingWindow">Window / SG Order</label>
+                    <div class="control-inline">
+                        <input type="number" id="smoothingWindow" value="7" min="3" max="101" step="2">
+                        <input type="number" id="smoothingOrder" value="3" min="1" max="7" step="1">
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label for="normalizationMethod">Normalization</label>
+                    <select id="normalizationMethod">
+                        <option value="max" selected>Max = 1</option>
+                        <option value="area">Area = 1</option>
+                        <option value="snv">SNV</option>
+                        <option value="none">None</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-inline">
+                        <input type="checkbox" id="peaksEnabled" checked>
+                        <label for="peaksEnabled" style="margin-bottom: 0;">Detect Peaks</label>
+                    </div>
+                    <div class="control-inline" style="margin-top: 8px;">
+                        <input type="number" id="peakHeightPercent" value="12" min="1" max="80" step="1">
+                        <input type="number" id="peakDistance" value="30" min="5" max="300" step="5">
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <div class="control-inline">
+                        <input type="checkbox" id="showRawSpectrum" checked>
+                        <label for="showRawSpectrum" style="margin-bottom: 0;">Raw Overlay</label>
+                    </div>
+                    <div class="control-inline" style="margin-top: 8px;">
+                        <input type="checkbox" id="showBaselineSpectrum" checked>
+                        <label for="showBaselineSpectrum" style="margin-bottom: 0;">Baseline Overlay</label>
+                    </div>
+                </div>
+
+                <div class="analysis-summary" id="analysisSummary">No processed spectrum yet.</div>
 
                 <div class="section-title">Log</div>
                 <div class="log-container" id="logContainer"></div>
@@ -652,6 +812,7 @@
         </div>
     </div>
 
+    <script src="signal-processing.js"></script>
     <script src="spectrometer.js"></script>
 </body>
 </html>
