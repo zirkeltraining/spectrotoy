@@ -1,6 +1,10 @@
 # BTC100-2S Spectrometer Diagnostic Toolkit
 
-A modern web-based diagnostic application for interfacing with the B&W Tek BTC100-2S spectrometer via USB-RS232 (FTDI adapter) using the WebSerial API.
+A modern web-based diagnostic application designed to work with CUBERAMAN, the open source DIV raman spectrometer designed by Jacob Busshart (https://github.com/jacobbusshart/CubeRaman).
+Interfacing with the B&W Tek BTC100-2S spectrometer via USB-RS232 (FTDI adapter) using the WebSerial API.
+Basic features for raman processing of the scanned dataset.
+Work in progress!
+
 
 ## Features
 
@@ -15,14 +19,21 @@ A modern web-based diagnostic application for interfacing with the B&W Tek BTC10
 - ✅ **Continuous Scanning**: Acquire multiple spectra sequentially
 - ✅ **Integration Time Control**: Adjust sensor integration time (50-65000ms)
 - ✅ **Averaging**: Configure multi-sample averaging
-- ✅ **CubeRaman CSV Export**: Save wavelength/count data in SpectrumPro-compatible CSV format
+- ✅ **CSV Import**: Load raw scans from disk for offline processing and comparison
+- ✅ **Raman Signal Processing**: Convert wavelength data to Raman shift and process spectra in-browser
+- ✅ **Baseline Correction**: SNIP, ALS, and arPLS baseline removal
+- ✅ **Spike Removal**: Cosmic-ray style spike detection and interpolation
+- ✅ **Smoothing and Normalization**: Savitzky-Golay, moving average, max/area/SNV normalization
+- ✅ **Peak Detection and Labeling**: Detect peaks in the processed waveform and label Raman shifts
+- ✅ **CubeRaman CSV Export**: Save raw or processed data in SpectrumPro-compatible CSV format
 
 ## Hardware Requirements
 
 - **B&W Tek BTC100-2S Spectrometer** with RS232 port
-- **USB-RS232 Adapter** (FTDI-based strongly recommended)
+- **USB-RS232 Adapter** (FTDI-based is the only one i tested)
 - **Computer** with Chrome, Edge, or Opera browser (WebSerial support required)
-- **USB Cable** connecting adapter to computer
+- **USB Cable** who would have thought?
+- for Raman analysis: **Laser & optical assembly** from CubeRaman project.
 
 ## Software Requirements
 
@@ -31,7 +42,7 @@ A modern web-based diagnostic application for interfacing with the B&W Tek BTC10
   - Microsoft Edge 89+
   - Opera 76+
   - Android Chrome 89+
-  - NOT supported in Firefox or Safari (as of 2024)
+  - NOT supported in Firefox or Safari (as of May 2026)
 
 ## Quick Start
 
@@ -57,7 +68,13 @@ A modern web-based diagnostic application for interfacing with the B&W Tek BTC10
    - Spectral data displays in the main chart
    - Peak wavelength and intensity appear in the statistics panel
    - All commands/responses logged in the control panel
+   - Enable **"Raman Processing"** options to view baseline-corrected spectra
    - Click **"Export CSV"** after a scan to save a CubeRaman SpectrumPro-compatible file
+
+6. **Import Existing Data**:
+   - Use **"Import Raw Scan CSV"** to load a scan from disk
+   - Supported inputs include one-column intensity CSVs and `Wavelength,Averaged` exports
+   - Imported wavelength columns are preserved row-for-row so processed peak labels can be compared directly with CubeRaman/SpectrumPro
 
 ## Device Communication Protocol
 
@@ -155,7 +172,52 @@ spectrograph.updateCalibration(404.2, 0.0865, 0.00000, 0.00000);
 3. Click "Export CSV"
 ```
 
-The exported CSV always writes four metadata rows followed by a table headed `Wavelength,Averaged`. Wavelength values are calibrated nanometers, and intensity values are detector counts.
+When Raman processing is disabled, the exported CSV writes four metadata rows followed by `Wavelength,Averaged`. Wavelength values are calibrated nanometers, and intensity values are detector counts.
+
+When Raman processing is enabled, the exported CSV writes processed columns:
+
+```
+Raman_Shift_cm1,Raw_Intensity,Cleaned_Intensity,Baseline,Processed_Intensity
+```
+
+### 6. Offline Raman Processing
+```
+1. Click "Import Raw Scan CSV"
+2. Select a raw scan exported from SpectroToy, CubeRaman, or another CSV source
+3. Adjust Raman Processing controls
+4. Compare detected peak labels against another processing workflow
+```
+
+The importer looks for common column names such as `Wavelength`, `Averaged`, `Raw_Intensity`, `Intensity`, `Counts`, and `Raman_Shift_cm1`. If wavelength values are present, they are used directly instead of reconstructing the x-axis from a min/max range.
+
+## Raman Processing
+
+The browser-side processing pipeline is implemented in `signal-processing.js` and mirrors the core numerical workflow used by `CubeRaman-SpectrumPro_v2.py`.
+
+Processing steps:
+
+1. Convert wavelength in nm to Raman shift in cm⁻¹ using the configured laser wavelength
+2. Restrict the signal to the selected Raman shift range
+3. Optionally remove narrow spike artifacts using derivative-based modified Z-score detection
+4. Estimate the baseline using SNIP, ALS, arPLS, or no baseline correction
+5. Subtract the baseline
+6. Smooth the corrected spectrum with Savitzky-Golay or moving average filtering
+7. Normalize the processed waveform
+8. Detect and label peaks on the processed spectrum
+
+Available controls:
+
+| Control | Description |
+|---------|-------------|
+| Raman Range | Min/max Raman shift shown and processed |
+| Remove Spikes | Enables cosmic-ray style spike interpolation |
+| Baseline | Selects SNIP, ALS, arPLS, or no baseline correction |
+| SNIP Iterations | Controls the width of the SNIP background window |
+| ALS/arPLS λ | Controls Whittaker baseline smoothness as `10^n` |
+| Smoothing | Selects Savitzky-Golay, moving average, or no smoothing |
+| Normalization | Selects max, area, SNV, or no normalization |
+| Detect Peaks | Enables processed-peak markers and labels |
+| Raw/Baseline Overlay | Shows normalized raw and baseline traces for comparison |
 
 ## Troubleshooting
 
@@ -190,13 +252,21 @@ The exported CSV always writes four metadata rows followed by a table headed `Wa
 - **Cause**: Sensor noise, poor calibration, or saturated signal
 - **Solution**:
   - Let TEC cooler run 5-10 minutes before taking measurements
-  - Set background baseline (ensure lens is blocked)
+  - Try SNIP or arPLS baseline correction in the Raman Processing panel
   - Adjust light intensity
   - Increase averaging count
 
 ### "Saturation" (flat line at top)
 - **Cause**: Too much light reaching sensor
 - **Solution**: Reduce light intensity or move light source away
+
+### Imported CSV peaks do not line up with another tool
+- **Cause**: Different laser wavelength, x-axis calibration, or processing settings
+- **Solution**:
+  - Confirm Laser Wavelength matches the acquisition setup
+  - Prefer CSVs with a wavelength column so the original x-axis is preserved
+  - Match smoothing, baseline, normalization, and peak threshold settings
+  - Check that the same Raman shift range is selected
 
 ## Data Interpretation
 
@@ -205,6 +275,8 @@ The exported CSV always writes four metadata rows followed by a table headed `Wa
 - **Max Value**: 65535 counts (uint16 maximum)
 - **Noise Floor**: Expected ~1000-2000 counts on cold sensor with no input
 - **Peak**: Strongest spectral line appears at highest counts
+- **Raman Shift**: Calculated from calibrated wavelength and configured laser wavelength
+- **Processed Intensity**: Baseline-subtracted, optionally smoothed and normalized value
 
 ## Advanced Configuration
 
@@ -221,6 +293,7 @@ spectrograph.writeCommand("I1000");  // 1000ms integration
 
 // Access current data
 console.log(spectrograph.currentData);
+console.log(spectrograph.currentAnalysis);
 
 // Change wavelength range
 spectrograph.wavelengthMin = 350;
@@ -234,6 +307,7 @@ spectrograph.initializeChart();
 spectrotoy/
 ├── index.html          # Main UI (HTML + CSS)
 ├── spectrometer.js     # Core application logic
+├── signal-processing.js # Browser-side Raman processing algorithms
 └── README.md           # This file
 ```
 
@@ -242,6 +316,7 @@ spectrotoy/
 - **Update Rate**: Limited by USB latency and device response time (~100-500ms)
 - **Data Transfer**: ASCII mode ~20-50ms per scan; Binary mode ~10-20ms per scan
 - **Chart Rendering**: Smooth with ~100 data points; may lag with extreme zooming
+- **Processing Cost**: SNIP is fastest; ALS/arPLS use an iterative in-browser linear solver and may be slower on older hardware
 
 ## Known Limitations
 
@@ -249,6 +324,8 @@ spectrotoy/
 2. **Mobile**: WebSerial limited; works better on desktop/Android
 3. **Wavelength Calibration**: Requires manual setup with reference light sources
 4. **Binary Mode**: Not fully tested on all platforms; ASCII mode more reliable
+5. **Numerical Parity**: Browser processing is designed to match CubeRaman closely, but exact floating-point results may differ slightly from NumPy/SciPy
+6. **Peak Fitting UI**: Pseudo-Voigt fitting helpers exist in code, but the browser UI currently focuses on acquisition, processing, and peak labeling
 
 ## Security Notes
 
@@ -263,17 +340,26 @@ spectrotoy/
 - [WebSerial API Specification](https://wicg.github.io/serial/)
 - [Chart.js Documentation](https://www.chartjs.org/)
 
+## Credits
+
+- **CubeRaman / SpectrumPro workflow**: The Raman processing workflow and CSV compatibility are based on the CubeRaman `CubeRaman-SpectrumPro_v2.py` tool by [Jacob Busshart](https://github.com/jacobbusshart), used here with the author's kind permission.
+- **B&W Tek BTC100-2S protocol notes**: Russell Graves' BTC100 spectrometry write-up helped clarify practical communication details for this instrument family.
+- **Signal processing methods**: Baseline and spectral-processing behavior follows published approaches including SNIP, asymmetric least squares, arPLS, Savitzky-Golay smoothing, and pseudo-Voigt peak modeling.
+- **Browser platform**: WebSerial provides the device connection layer, and Chart.js provides the interactive plotting layer.
+
 ## Future Enhancements
 
 - [ ] Binary mode improvements and testing
 - [x] CSV export functionality
+- [x] CSV import functionality
+- [x] Browser-side Raman processing
 - [ ] Multi-point wavelength calibration UI
-- [ ] Background subtraction
-- [ ] Peak detection and labeling
+- [x] Baseline correction
+- [x] Peak detection and labeling
 - [ ] Integration with spectral reference database
+- [ ] Peak fitting UI
 - [ ] Dark current compensation
 - [ ] Persistence and data logging
-- [ ] Real-time FFT analysis
 
 ## Troubleshooting Checklist
 
