@@ -12,12 +12,17 @@ class SpectrographDiagnostic {
         this.currentData = null;
         this.currentAnalysis = null;
         this.currentWavelengths = null;
+        this.currentSpectrumColumns = null;
+        this.currentScanMetadata = null;
         this.asciiMode = true;
+        this.pendingQueryParam = null;
         this.awaitingBinaryScan = false;
         this.textBuffer = '';
         this.binaryBuffer = new Uint8Array();
         this.baudRate = 9600;
         this.pendingBaudRate = 9600;
+        this.axisCalibrationStorageKey = 'spectrotoyAxisCalibration';
+        this.settingsStorageKey = 'spectrotoyControlSettings';
         this.scanStartTime = 0;
         this.lastBinaryByteTime = 0;
         this.lastScanCommandTime = 0;
@@ -34,8 +39,9 @@ class SpectrographDiagnostic {
             600: 7
         };
         
-        // Pixel to wavelength calibration (default linear calibration)
-        // BTC100-2S operates 400-580nm range, 2048 pixels
+        // Pixel to wavelength calibration. Start uncalibrated so raw scans are not
+        // labeled as wavelength data until the operator opts into a mapping.
+        this.calibrationMode = 'pixel';
         this.wavelengthMin = 400;
         this.wavelengthMax = 580;
         this.pixelCount = 2048;
@@ -191,7 +197,7 @@ class SpectrographDiagnostic {
                         callbacks: {
                             title: (items) => {
                                 if (!items.length) return '';
-                                const unit = this.isAnalysisEnabled() ? 'cm⁻¹' : 'nm';
+                                const unit = this.currentAnalysis?.processed?.length ? 'cm⁻¹' : this.getXAxisUnit();
                                 return `${items[0].parsed.x.toFixed(1)} ${unit}`;
                             },
                             label: (item) => `${item.dataset.label}: ${item.parsed.y.toFixed(4)}`
@@ -203,11 +209,11 @@ class SpectrographDiagnostic {
                         type: 'linear',
                         title: {
                             display: true,
-                            text: 'Wavelength (nm)',
+                            text: 'Sensor Pixel',
                             color: '#8ea2b8'
                         },
-                        min: this.wavelengthMin,
-                        max: this.wavelengthMax,
+                        min: 0,
+                        max: this.pixelCount - 1,
                         ticks: {
                             color: '#8ea2b8',
                             maxTicksLimit: 10
@@ -246,6 +252,9 @@ class SpectrographDiagnostic {
         if (Array.isArray(this.currentWavelengths) && this.currentWavelengths[pixel] !== undefined) {
             return this.currentWavelengths[pixel];
         }
+        if (this.calibrationMode !== 'linear') {
+            return NaN;
+        }
         const denominator = Math.max(1, this.pixelCount - 1);
         return this.wavelengthMin + 
                (pixel / denominator) * (this.wavelengthMax - this.wavelengthMin);
@@ -257,21 +266,245 @@ class SpectrographDiagnostic {
                 (this.wavelengthMax - this.wavelengthMin)) * denominator);
     }
 
-    updateCalibration(c0, c1, c2, c3) {
+    updateCalibration(c0, c1, c2, c3, options = {}) {
         // Set polynomial calibration: wavelength = c0 + c1*p + c2*p^2 + c3*p^3
+        this.currentWavelengths = null;
+        this.calibrationMode = 'polynomial';
         this.c0 = c0;
         this.c1 = c1;
         this.c2 = c2;
         this.c3 = c3;
-        this.log(`Calibration updated: c0=${c0}, c1=${c1}, c2=${c2}, c3=${c3}`, 'info');
+        if (options.silent !== true) {
+            this.log(`Calibration updated: c0=${c0}, c1=${c1}, c2=${c2}, c3=${c3}`, 'info');
+        }
     }
 
     pixelToWavelengthCalibrated(pixel) {
-        if (this.c1 === undefined) {
+        if (Array.isArray(this.currentWavelengths) && this.currentWavelengths[pixel] !== undefined) {
+            return this.currentWavelengths[pixel];
+        }
+        if (this.calibrationMode !== 'polynomial' || this.c1 === undefined) {
             return this.pixelToWavelength(pixel); // Use linear if not calibrated
         }
         return this.c0 + this.c1 * pixel + this.c2 * pixel * pixel + 
                this.c3 * pixel * pixel * pixel;
+    }
+
+    hasWavelengthCalibration() {
+        return this.calibrationMode !== 'pixel' || Array.isArray(this.currentWavelengths);
+    }
+
+    getXAxisValue(pixel) {
+        return this.hasWavelengthCalibration() ? this.pixelToWavelengthCalibrated(pixel) : pixel;
+    }
+
+    getXAxisLabel() {
+        return this.hasWavelengthCalibration() ? 'Wavelength (nm)' : 'Sensor Pixel';
+    }
+
+    getXAxisUnit() {
+        return this.hasWavelengthCalibration() ? 'nm' : 'px';
+    }
+
+    readNumberInput(id, fallback = NaN) {
+        const value = parseFloat(document.getElementById(id)?.value);
+        return Number.isFinite(value) ? value : fallback;
+    }
+
+    setInputValue(id, value) {
+        const input = document.getElementById(id);
+        if (input && value !== undefined && value !== null && Number.isFinite(Number(value))) {
+            input.value = String(value);
+        }
+    }
+
+    saveAxisCalibrationPreference(config) {
+        try {
+            localStorage.setItem(this.axisCalibrationStorageKey, JSON.stringify(config));
+        } catch (error) {
+            this.log(`Could not save axis calibration: ${error.message}`, 'error');
+        }
+    }
+
+    loadAxisCalibrationPreference() {
+        let config = null;
+        try {
+            const stored = localStorage.getItem(this.axisCalibrationStorageKey);
+            config = stored ? JSON.parse(stored) : null;
+        } catch (error) {
+            this.log(`Could not load saved axis calibration: ${error.message}`, 'error');
+            return;
+        }
+
+        if (!config || typeof config !== 'object') return;
+
+        const modeSelect = document.getElementById('axisCalibrationMode');
+        if (modeSelect && ['pixel', 'linear', 'polynomial'].includes(config.mode)) {
+            modeSelect.value = config.mode;
+        }
+
+        this.setInputValue('wavelengthMin', config.wavelengthMin);
+        this.setInputValue('wavelengthMax', config.wavelengthMax);
+        this.setInputValue('calibrationC0', config.c0);
+        this.setInputValue('calibrationC1', config.c1);
+        this.setInputValue('calibrationC2', config.c2);
+        this.setInputValue('calibrationC3', config.c3);
+
+        this.applyAxisCalibration({ persist: false, silent: true });
+        this.log(`Loaded saved ${config.mode} axis calibration`, 'info');
+    }
+
+    applyAxisCalibration(options = {}) {
+        const persist = options.persist !== false;
+        const silent = options.silent === true;
+        const mode = document.getElementById('axisCalibrationMode')?.value || 'pixel';
+        let config = { mode };
+
+        if (mode === 'linear') {
+            const min = this.readNumberInput('wavelengthMin', this.wavelengthMin);
+            const max = this.readNumberInput('wavelengthMax', this.wavelengthMax);
+            if (!(Number.isFinite(min) && Number.isFinite(max) && max > min)) {
+                this.log('Linear wavelength range must have a valid min and max', 'error');
+                return;
+            }
+            this.currentWavelengths = null;
+            this.c0 = undefined;
+            this.c1 = undefined;
+            this.c2 = undefined;
+            this.c3 = undefined;
+            this.calibrationMode = 'linear';
+            this.wavelengthMin = min;
+            this.wavelengthMax = max;
+            config = { mode, wavelengthMin: min, wavelengthMax: max };
+            if (!silent) this.log(`Using assumed linear wavelength range ${min.toFixed(3)}-${max.toFixed(3)} nm`, 'info');
+        } else if (mode === 'polynomial') {
+            const c0 = this.readNumberInput('calibrationC0');
+            const c1 = this.readNumberInput('calibrationC1');
+            const c2 = this.readNumberInput('calibrationC2', 0);
+            const c3 = this.readNumberInput('calibrationC3', 0);
+            if (![c0, c1, c2, c3].every(Number.isFinite)) {
+                this.log('Polynomial calibration requires numeric coefficients', 'error');
+                return;
+            }
+            this.currentWavelengths = null;
+            this.updateCalibration(c0, c1, c2, c3, { silent });
+            config = { mode, c0, c1, c2, c3 };
+        } else {
+            this.currentWavelengths = null;
+            this.c0 = undefined;
+            this.c1 = undefined;
+            this.c2 = undefined;
+            this.c3 = undefined;
+            this.calibrationMode = 'pixel';
+            if (!silent) this.log('Using uncalibrated sensor pixel axis', 'info');
+        }
+
+        if (persist) {
+            this.saveAxisCalibrationPreference(config);
+            this.saveControlSettings();
+        }
+        this.syncAxisCalibrationUI();
+        if (Array.isArray(this.currentData) && this.currentData.length > 0) {
+            this.updateChart({ final: true });
+            this.updateStatistics();
+        }
+    }
+
+    syncAxisCalibrationUI() {
+        const mode = document.getElementById('axisCalibrationMode')?.value || this.calibrationMode;
+        const linearControls = document.getElementById('linearCalibrationControls');
+        const polynomialControls = document.getElementById('polynomialCalibrationControls');
+        if (linearControls) linearControls.style.display = mode === 'linear' ? 'block' : 'none';
+        if (polynomialControls) polynomialControls.style.display = mode === 'polynomial' ? 'block' : 'none';
+    }
+
+    getStoredSettingControlIds() {
+        return [
+            'integrationTime',
+            'averageCount',
+            'laserWavelength',
+            'baudRate',
+            'axisCalibrationMode',
+            'wavelengthMin',
+            'wavelengthMax',
+            'calibrationC0',
+            'calibrationC1',
+            'calibrationC2',
+            'calibrationC3',
+            'analysisEnabled',
+            'ramanMin',
+            'ramanMax',
+            'spikeEnabled',
+            'spikeThreshold',
+            'baselineMethod',
+            'snipIterations',
+            'lambdaPower',
+            'smoothingMethod',
+            'smoothingWindow',
+            'smoothingOrder',
+            'normalizationMethod',
+            'peaksEnabled',
+            'peakHeightPercent',
+            'peakDistance',
+            'showRawSpectrum',
+            'showBaselineSpectrum'
+        ];
+    }
+
+    saveControlSettings() {
+        const settings = {};
+        this.getStoredSettingControlIds().forEach(id => {
+            const control = document.getElementById(id);
+            if (!control) return;
+            settings[id] = control.type === 'checkbox' ? control.checked : control.value;
+        });
+
+        try {
+            localStorage.setItem(this.settingsStorageKey, JSON.stringify(settings));
+        } catch (error) {
+            this.log(`Could not save settings: ${error.message}`, 'error');
+        }
+    }
+
+    loadControlSettings() {
+        let settings = null;
+        try {
+            const stored = localStorage.getItem(this.settingsStorageKey);
+            settings = stored ? JSON.parse(stored) : null;
+        } catch (error) {
+            this.log(`Could not load saved settings: ${error.message}`, 'error');
+            return;
+        }
+
+        if (!settings || typeof settings !== 'object') return;
+
+        this.getStoredSettingControlIds().forEach(id => {
+            const control = document.getElementById(id);
+            if (!control || settings[id] === undefined) return;
+            if (control.type === 'checkbox') {
+                control.checked = Boolean(settings[id]);
+            } else {
+                control.value = String(settings[id]);
+            }
+        });
+
+        const selectedBaud = parseInt(document.getElementById('baudRate')?.value, 10);
+        if (selectedBaud in this.baudRateMap) {
+            this.pendingBaudRate = selectedBaud;
+        }
+    }
+
+    setupCollapsibleSections() {
+        document.querySelectorAll('.control-section').forEach(section => {
+            section.classList.remove('expanded');
+            const toggle = section.querySelector('.section-toggle');
+            if (!toggle) return;
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.addEventListener('click', () => {
+                const expanded = section.classList.toggle('expanded');
+                toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            });
+        });
     }
 
     pixelToRamanShift(pixel) {
@@ -300,9 +533,9 @@ class SpectrographDiagnostic {
             // Start listening for data
             this.startReadingData();
             
-            // Query device status
+            // Query device status without resetting the device.
             await new Promise(resolve => setTimeout(resolve, 500));
-            this.sendCommand('Q'); // Reset to known state
+            this.queryStartupSettings();
 
         } catch (error) {
             this.log(`Connection failed: ${error.message}`, 'error');
@@ -353,6 +586,23 @@ class SpectrographDiagnostic {
         }
     }
 
+    updateModeButtons(mode = this.asciiMode ? 'ascii' : 'binary') {
+        const asciiBtn = document.getElementById('asciiModeBtn');
+        const binaryBtn = document.getElementById('binaryModeBtn');
+        if (!asciiBtn || !binaryBtn) return;
+
+        asciiBtn.classList.toggle('mode-active', mode === 'ascii');
+        binaryBtn.classList.toggle('mode-active', mode === 'binary');
+    }
+
+    async queryStartupSettings() {
+        this.queryValue('A');
+        await new Promise(resolve => setTimeout(resolve, 120));
+        this.queryValue('I');
+        await new Promise(resolve => setTimeout(resolve, 120));
+        this.queryValue('B');
+    }
+
     updateExportUI() {
         const exportBtn = document.getElementById('exportCubeRamanBtn');
         if (exportBtn) {
@@ -397,6 +647,12 @@ class SpectrographDiagnostic {
             return null;
         }
 
+        if (!this.hasWavelengthCalibration()) {
+            this.currentAnalysis = null;
+            this.updateAnalysisSummary('Raman processing needs a wavelength calibration or imported wavelength column.');
+            return null;
+        }
+
         const wavelengths = this.currentData.map((_, index) => this.pixelToWavelengthCalibrated(index));
         this.currentAnalysis = RamanProcessing.processSpectrum(
             wavelengths,
@@ -407,9 +663,14 @@ class SpectrographDiagnostic {
         return this.currentAnalysis;
     }
 
-    updateAnalysisSummary() {
+    updateAnalysisSummary(message = null) {
         const summary = document.getElementById('analysisSummary');
         if (!summary) return;
+
+        if (message) {
+            summary.textContent = message;
+            return;
+        }
 
         if (!this.currentAnalysis || this.currentAnalysis.processed.length === 0) {
             summary.textContent = 'No processed spectrum yet.';
@@ -580,6 +841,11 @@ class SpectrographDiagnostic {
     }
 
     processResponse(line) {
+        if (this.handleDeviceSettingResponse(line)) {
+            this.log(`Response: ${line}`, 'response');
+            return;
+        }
+
         // Check if this is spectral data (space or tab separated numbers)
         if (line.match(/^[\d\s\t]+$/)) {
             const values = line.trim().split(/[\s\t]+/).map(v => {
@@ -596,6 +862,61 @@ class SpectrographDiagnostic {
                 this.log(`Response: ${line}`, 'response');
             }
         }
+    }
+
+    handleDeviceSettingResponse(line) {
+        const trimmed = line.trim();
+        if (!trimmed) return false;
+
+        const numericValue = Number.parseFloat(trimmed.match(/[-+]?\d*\.?\d+/)?.[0] ?? '');
+        const upper = trimmed.toUpperCase();
+        const explicitParam = upper.match(/(?:^|\?|\b)([AIB])\s*(?:=|:|\s)\s*([-+]?\d*\.?\d+)/);
+        let param = explicitParam?.[1] || this.pendingQueryParam;
+        const value = explicitParam ? Number.parseFloat(explicitParam[2]) : numericValue;
+
+        if (!explicitParam && Number.isFinite(value)) {
+            if (upper.includes('AVERAGE')) param = 'A';
+            if (upper.includes('INTEGRATION')) param = 'I';
+        }
+
+        if (upper.includes('ASCII')) {
+            this.asciiMode = true;
+            this.updateModeButtons('ascii');
+            this.pendingQueryParam = null;
+            return true;
+        }
+
+        if (upper.includes('BINARY')) {
+            this.asciiMode = false;
+            this.updateModeButtons('binary');
+            this.pendingQueryParam = null;
+            return true;
+        }
+
+        if (param === 'A' && Number.isFinite(value)) {
+            const input = document.getElementById('averageCount');
+            if (input) input.value = String(Math.round(value));
+            this.saveControlSettings();
+            this.pendingQueryParam = null;
+            return true;
+        }
+
+        if (param === 'I' && Number.isFinite(value)) {
+            const input = document.getElementById('integrationTime');
+            if (input) input.value = String(Math.round(value));
+            this.saveControlSettings();
+            this.pendingQueryParam = null;
+            return true;
+        }
+
+        if (param === 'B' && (value === 0 || value === 1)) {
+            this.asciiMode = value === 0;
+            this.updateModeButtons(this.asciiMode ? 'ascii' : 'binary');
+            this.pendingQueryParam = null;
+            return true;
+        }
+
+        return false;
     }
 
     parseDelimitedLine(line) {
@@ -636,15 +957,40 @@ class SpectrographDiagnostic {
         }
 
         const numericRows = [];
+        const metadata = {};
         let header = null;
+        let tableStarted = false;
+
+        const normalizeHeader = row => row.map(value => value.toLowerCase().replace(/[^a-z0-9]+/g, '_'));
+        const rowLooksLikeHeader = row => {
+            const names = normalizeHeader(row);
+            return names.some(name => (
+                name.includes('pixel') ||
+                name.includes('wavelength') ||
+                name.includes('spectrum') ||
+                name.includes('intensity') ||
+                name.includes('counts') ||
+                name.includes('raman_shift')
+            ));
+        };
 
         rows.forEach(row => {
             const numeric = row.map(value => Number.parseFloat(String(value).replace(',', '.')));
             const numericCount = numeric.filter(Number.isFinite).length;
+
+            if (!tableStarted && rowLooksLikeHeader(row)) {
+                header = normalizeHeader(row);
+                tableStarted = true;
+                return;
+            }
+
             if (numericCount >= Math.min(2, row.length)) {
+                tableStarted = true;
                 numericRows.push(numeric);
-            } else if (!header) {
-                header = row.map(value => value.toLowerCase().replace(/[^a-z0-9]+/g, '_'));
+            } else if (!tableStarted && row.length >= 2) {
+                const key = row[0].replace(/:$/, '').trim();
+                const value = row.slice(1).join(',').trim();
+                if (key && value) metadata[key] = value;
             }
         });
 
@@ -656,15 +1002,27 @@ class SpectrographDiagnostic {
         let wavelengthColumn = -1;
         let ramanShiftColumn = -1;
         let intensityColumn = -1;
+        let pixelColumn = -1;
+        let sumColumn = -1;
+        let averagedColumn = -1;
+        let backgroundColumn = -1;
 
         if (header) {
+            pixelColumn = header.findIndex(name => name.includes('pixel'));
             wavelengthColumn = header.findIndex(name => (
                 name.includes('wavelength') || name === 'wl' || name.includes('lambda')
             ));
             ramanShiftColumn = header.findIndex(name => (
                 name.includes('raman_shift') || name.includes('shift_cm') || name === 'shift'
             ));
+            sumColumn = header.findIndex(name => name.includes('sum') && name.includes('spectrum'));
+            averagedColumn = header.findIndex(name => (
+                name.includes('averaged_spectrum') || name.includes('average_spectrum') || name === 'averaged'
+            ));
+            backgroundColumn = header.findIndex(name => name.includes('background') && name.includes('spectrum'));
             const preferredIntensityNames = [
+                'averaged_spectrum',
+                'average_spectrum',
                 'averaged',
                 'raw_intensity',
                 'raw',
@@ -723,6 +1081,13 @@ class SpectrographDiagnostic {
         const laserWavelength = parseFloat(document.getElementById('laserWavelength')?.value) || 532;
         const intensities = [];
         let wavelengths = [];
+        const spectrumColumns = {
+            pixels: [],
+            wavelengths: [],
+            sum: [],
+            averaged: [],
+            background: []
+        };
         numericRows.forEach(row => {
             const intensity = row[intensityColumn];
             if (!Number.isFinite(intensity)) return;
@@ -738,8 +1103,13 @@ class SpectrographDiagnostic {
             }
 
             intensities.push(intensity);
+            if (pixelColumn >= 0 && Number.isFinite(row[pixelColumn])) spectrumColumns.pixels.push(row[pixelColumn]);
+            if (sumColumn >= 0 && Number.isFinite(row[sumColumn])) spectrumColumns.sum.push(row[sumColumn]);
+            if (averagedColumn >= 0 && Number.isFinite(row[averagedColumn])) spectrumColumns.averaged.push(row[averagedColumn]);
+            if (backgroundColumn >= 0 && Number.isFinite(row[backgroundColumn])) spectrumColumns.background.push(row[backgroundColumn]);
             if (Number.isFinite(wavelength)) {
                 wavelengths.push(wavelength);
+                spectrumColumns.wavelengths.push(wavelength);
             }
         });
 
@@ -750,6 +1120,12 @@ class SpectrographDiagnostic {
         return {
             intensities,
             wavelengths: wavelengths.length === intensities.length ? wavelengths : [],
+            spectrumColumns,
+            metadata,
+            pixelColumn,
+            sumColumn,
+            averagedColumn,
+            backgroundColumn,
             intensityColumn,
             wavelengthColumn,
             ramanShiftColumn,
@@ -763,22 +1139,30 @@ class SpectrographDiagnostic {
         try {
             const text = await file.text();
             const parsed = this.parseCsvText(text);
+            const importedIntegration = Number.parseFloat(parsed.metadata['Integration Time']);
+            const importedAverages = Number.parseFloat(parsed.metadata['Number of Averages']);
+            if (Number.isFinite(importedIntegration)) {
+                const integrationInput = document.getElementById('integrationTime');
+                if (integrationInput) integrationInput.value = String(importedIntegration);
+            }
+            if (Number.isFinite(importedAverages)) {
+                const averageInput = document.getElementById('averageCount');
+                if (averageInput) averageInput.value = String(importedAverages);
+            }
 
             if (parsed.wavelengths.length >= this.pixelCount * 0.5) {
                 const minWavelength = Math.min(...parsed.wavelengths);
                 const maxWavelength = Math.max(...parsed.wavelengths);
                 if (Number.isFinite(minWavelength) && Number.isFinite(maxWavelength) && maxWavelength > minWavelength) {
-                    this.wavelengthMin = minWavelength;
-                    this.wavelengthMax = maxWavelength;
-                    this.c0 = undefined;
-                    this.c1 = undefined;
-                    this.c2 = undefined;
-                    this.c3 = undefined;
                     this.log(`Imported wavelength range ${minWavelength.toFixed(2)}-${maxWavelength.toFixed(2)} nm`, 'info');
                 }
             }
 
-            this.parseASCIIData(parsed.intensities, parsed.wavelengths);
+            this.parseASCIIData(parsed.intensities, parsed.wavelengths, {
+                spectrumColumns: parsed.spectrumColumns,
+                metadata: parsed.metadata
+            });
+            this.saveControlSettings();
             this.log(`Imported ${file.name} (${parsed.intensities.length} numeric samples)`, 'success');
         } catch (error) {
             this.log(`CSV import failed: ${error.message}`, 'error');
@@ -840,11 +1224,12 @@ class SpectrographDiagnostic {
         }
     }
 
-    parseASCIIData(values, wavelengths = null) {
+    parseASCIIData(values, wavelengths = null, options = {}) {
         // Handle both array input and string input for flexibility
         let data = Array.isArray(values) ? values.map(Number) : values.trim().split(/\s+/).map(v => parseFloat(v));
         data = data.filter(v => !isNaN(v));
         let wavelengthData = Array.isArray(wavelengths) ? wavelengths.map(Number).filter(v => !isNaN(v)) : null;
+        const sourceColumns = options.spectrumColumns || null;
         
         this.log(`Parsed ${data.length} values (expected ${this.pixelCount})`, 'info');
         
@@ -869,6 +1254,14 @@ class SpectrographDiagnostic {
             
             this.currentData = data;
             this.currentWavelengths = wavelengthData && wavelengthData.length === data.length ? wavelengthData : null;
+            this.currentSpectrumColumns = sourceColumns ? {
+                pixels: sourceColumns.pixels?.length === data.length ? sourceColumns.pixels : null,
+                wavelengths: sourceColumns.wavelengths?.length === data.length ? sourceColumns.wavelengths : this.currentWavelengths,
+                sum: sourceColumns.sum?.length === data.length ? sourceColumns.sum : null,
+                averaged: sourceColumns.averaged?.length === data.length ? sourceColumns.averaged : null,
+                background: sourceColumns.background?.length === data.length ? sourceColumns.background : null
+            } : null;
+            this.currentScanMetadata = options.metadata || null;
             this.log('Chart data updated successfully', 'success');
             this.updateExportUI();
             this.updateChart({ final: true });
@@ -883,6 +1276,8 @@ class SpectrographDiagnostic {
         if (result.complete) {
             const trailingBytes = this.binaryBuffer.slice(result.consumedBytes);
             this.currentData = result.values;
+            this.currentSpectrumColumns = null;
+            this.currentScanMetadata = null;
             this.resetBinaryScanState();
             this.consecutiveScanTimeouts = 0;
             this.log('Binary scan completed', 'success');
@@ -988,7 +1383,7 @@ class SpectrographDiagnostic {
 
     updateRawChart(data, hotIndex) {
         const chartData = data.map((value, index) => ({
-            x: this.pixelToWavelengthCalibrated(index),
+            x: this.getXAxisValue(index),
             y: value
         }));
 
@@ -999,9 +1394,9 @@ class SpectrographDiagnostic {
         this.chart.data.datasets[3].data = [];
         this.chart.data.datasets[4].data = this.buildCursorLine(data, hotIndex, false);
 
-        this.chart.options.scales.x.title.text = 'Wavelength (nm)';
-        this.chart.options.scales.x.min = this.pixelToWavelengthCalibrated(0);
-        this.chart.options.scales.x.max = this.pixelToWavelengthCalibrated(this.pixelCount - 1);
+        this.chart.options.scales.x.title.text = this.getXAxisLabel();
+        this.chart.options.scales.x.min = this.getXAxisValue(0);
+        this.chart.options.scales.x.max = this.getXAxisValue(this.pixelCount - 1);
         this.chart.options.scales.y.suggestedMin = 0;
         this.chart.options.scales.y.max = undefined;
         this.chart.options.scales.y.beginAtZero = true;
@@ -1058,7 +1453,7 @@ class SpectrographDiagnostic {
 
         const yMax = Math.max(1, ...data);
         const pixel = Math.min(hotIndex, this.pixelCount - 1);
-        const x = useRamanShift ? this.pixelToRamanShift(pixel) : this.pixelToWavelengthCalibrated(pixel);
+        const x = useRamanShift ? this.pixelToRamanShift(pixel) : this.getXAxisValue(pixel);
         return [
             { x, y: 0 },
             { x, y: yMax }
@@ -1080,6 +1475,8 @@ class SpectrographDiagnostic {
             const q1Index = Math.floor(sorted.length * 0.25);
             const noiseFloor = sorted[q1Index] || 0;
 
+            const peakLabel = document.getElementById('peakAxisLabel');
+            if (peakLabel) peakLabel.textContent = 'Peak Raman Shift';
             document.getElementById('peakWavelength').textContent = peak.x.toFixed(1);
             document.querySelector('#peakWavelength + .unit').textContent = 'cm⁻¹';
             document.getElementById('peakIntensity').textContent = peak.y.toFixed(4);
@@ -1092,7 +1489,7 @@ class SpectrographDiagnostic {
         // Find peak
         const maxValue = Math.max(...data);
         const maxIndex = data.indexOf(maxValue);
-        const peakWavelength = this.pixelToWavelengthCalibrated(maxIndex);
+        const peakX = this.getXAxisValue(maxIndex);
 
         // Calculate noise floor (lower quartile)
         const sorted = [...data].sort((a, b) => a - b);
@@ -1100,8 +1497,10 @@ class SpectrographDiagnostic {
         const noiseFloor = sorted[q1Index];
 
         // Update UI
-        document.getElementById('peakWavelength').textContent = peakWavelength.toFixed(1);
-        document.querySelector('#peakWavelength + .unit').textContent = 'nm';
+        const peakLabel = document.getElementById('peakAxisLabel');
+        if (peakLabel) peakLabel.textContent = this.hasWavelengthCalibration() ? 'Peak Wavelength' : 'Peak Pixel';
+        document.getElementById('peakWavelength').textContent = peakX.toFixed(this.hasWavelengthCalibration() ? 1 : 0);
+        document.querySelector('#peakWavelength + .unit').textContent = this.getXAxisUnit();
         document.getElementById('peakIntensity').textContent = maxValue.toLocaleString();
         document.getElementById('noiseFloor').textContent = noiseFloor.toLocaleString();
     }
@@ -1151,9 +1550,11 @@ class SpectrographDiagnostic {
             this.asciiMode = true;
             this.awaitingBinaryScan = false;
             this.binaryBuffer = new Uint8Array();
+            this.updateModeButtons('ascii');
             this.log('Switched to ASCII mode', 'info');
         } else if (command === 'b') {
             this.asciiMode = false;
+            this.updateModeButtons('binary');
             this.log('Switched to Binary mode', 'info');
         } else if (command === 'S' && !this.asciiMode) {
             this.awaitingBinaryScan = true;
@@ -1167,6 +1568,7 @@ class SpectrographDiagnostic {
     }
 
     async queryValue(param) {
+        this.pendingQueryParam = String(param).toUpperCase();
         this.writeCommand(`?${param}`);
     }
 
@@ -1184,63 +1586,84 @@ class SpectrographDiagnostic {
         this.writeCommand(`${param}${value}`);
     }
 
-    buildCubeRamanCSV() {
+    formatCsvValue(value) {
+        if (value === null || value === undefined) return '';
+        const text = String(value);
+        return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    }
+
+    formatCsvNumber(value, decimals = null) {
+        if (!Number.isFinite(value)) return '';
+        if (decimals !== null) return Number(value).toFixed(decimals);
+        return String(Number(value));
+    }
+
+    buildSpectrumProCSV() {
         if (!Array.isArray(this.currentData) || this.currentData.length === 0) {
             throw new Error('No spectrum data available to export');
         }
 
-        const laserWavelength = parseFloat(document.getElementById('laserWavelength')?.value);
         const integrationTime = parseInt(document.getElementById('integrationTime')?.value, 10);
         const averageCount = parseInt(document.getElementById('averageCount')?.value, 10);
-        const laserText = Number.isFinite(laserWavelength) ? `${laserWavelength} nm` : 'unknown';
-        const integrationText = Number.isFinite(integrationTime) ? `${integrationTime} ms` : 'unknown';
-        const averageText = Number.isFinite(averageCount) ? averageCount : 'unknown';
+        const metadata = this.currentScanMetadata || {};
+        const scanDate = metadata['Scan Date'] || new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+        const integrationText = Number.isFinite(integrationTime)
+            ? integrationTime
+            : (metadata['Integration Time'] || '');
+        const averageText = Number.isFinite(averageCount)
+            ? averageCount
+            : (metadata['Number of Averages'] || '');
+        const averages = Number.isFinite(averageCount) && averageCount > 0 ? averageCount : 1;
 
         const lines = [
-            'CubeRaman-compatible export from SpectroToy',
-            `Laser wavelength: ${laserText}`,
-            `Integration time: ${integrationText}; scans averaged: ${averageText}`,
-            ''
+            `Scan Date:,${this.formatCsvValue(scanDate)}`,
+            `Integration Time:,${this.formatCsvValue(integrationText)}`,
+            `Number of Averages:,${this.formatCsvValue(averageText)}`,
+            '',
+            'Pixel Number,Wavelength (nm),Sum Spectrum,Averaged Spectrum,Background Spectrum'
         ];
 
-        if (this.currentAnalysis?.processed?.length) {
-            lines.push('Raman_Shift_cm1,Raw_Intensity,Cleaned_Intensity,Baseline,Processed_Intensity');
-            this.currentAnalysis.x.forEach((shift, index) => {
-                lines.push([
-                    shift.toFixed(3),
-                    this.currentAnalysis.raw[index].toFixed(6),
-                    this.currentAnalysis.cleaned[index].toFixed(6),
-                    this.currentAnalysis.baseline[index].toFixed(6),
-                    this.currentAnalysis.processed[index].toFixed(8)
-                ].join(','));
-            });
-        } else {
-            lines.push('Wavelength,Averaged');
-            this.currentData.forEach((intensity, pixel) => {
-                const wavelength = this.pixelToWavelengthCalibrated(pixel);
-                lines.push(`${wavelength.toFixed(3)},${Math.round(intensity)}`);
-            });
-        }
+        this.currentData.forEach((intensity, pixel) => {
+            const columns = this.currentSpectrumColumns || {};
+            const sourcePixel = columns.pixels?.[pixel];
+            const wavelength = columns.wavelengths?.[pixel] ?? (
+                this.hasWavelengthCalibration() ? this.pixelToWavelengthCalibrated(pixel) : NaN
+            );
+            const averaged = columns.averaged?.[pixel] ?? intensity;
+            const sum = columns.sum?.[pixel] ?? (averaged * averages);
+            const background = columns.background?.[pixel] ?? 0;
+            lines.push([
+                this.formatCsvNumber(Number.isFinite(sourcePixel) ? sourcePixel : pixel),
+                this.formatCsvNumber(wavelength),
+                this.formatCsvNumber(sum),
+                this.formatCsvNumber(averaged),
+                this.formatCsvNumber(background)
+            ].join(','));
+        });
 
-        return lines.join('\n');
+        return lines.join('\r\n');
+    }
+
+    buildCubeRamanCSV() {
+        return this.buildSpectrumProCSV();
     }
 
     exportCubeRamanCSV() {
         try {
-            const csv = this.buildCubeRamanCSV();
+            const csv = this.buildSpectrumProCSV();
             const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const link = document.createElement('a');
 
             link.href = url;
-            link.download = `spectrotoy-cuberaman-${timestamp}.csv`;
+            link.download = `spectrotoy-spectrumpro-${timestamp}.csv`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
             URL.revokeObjectURL(url);
 
-            this.log(`Exported CubeRaman CSV with ${this.currentData.length} rows`, 'success');
+            this.log(`Exported SpectrumPro CSV with ${this.currentData.length} rows`, 'success');
         } catch (error) {
             this.log(`Export failed: ${error.message}`, 'error');
         }
@@ -1312,6 +1735,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.setSetting = (param) => spectrograph.setSetting(param);
     window.applyBaudRate = () => spectrograph.applyBaudRate();
     window.exportCubeRamanCSV = () => spectrograph.exportCubeRamanCSV();
+    window.applyAxisCalibration = () => spectrograph.applyAxisCalibration();
 
     const csvImportFile = document.getElementById('csvImportFile');
     if (csvImportFile) {
@@ -1320,6 +1744,9 @@ document.addEventListener('DOMContentLoaded', () => {
             spectrograph.importScanCSV(file);
         });
     }
+
+    spectrograph.setupCollapsibleSections();
+    spectrograph.loadControlSettings();
 
     const processingControlIds = [
         'analysisEnabled',
@@ -1346,9 +1773,39 @@ document.addEventListener('DOMContentLoaded', () => {
         const control = document.getElementById(id);
         if (!control) return;
         const eventName = control.type === 'checkbox' || control.tagName === 'SELECT' ? 'change' : 'input';
-        control.addEventListener(eventName, () => spectrograph.handleProcessingSettingsChanged());
+        control.addEventListener(eventName, () => {
+            spectrograph.handleProcessingSettingsChanged();
+            spectrograph.saveControlSettings();
+        });
     });
+
+    const axisCalibrationMode = document.getElementById('axisCalibrationMode');
+    if (axisCalibrationMode) {
+        axisCalibrationMode.addEventListener('change', () => {
+            spectrograph.syncAxisCalibrationUI();
+            spectrograph.saveControlSettings();
+        });
+    }
+    spectrograph.syncAxisCalibrationUI();
+    spectrograph.loadAxisCalibrationPreference();
     spectrograph.syncProcessingLabels();
+
+    [
+        'integrationTime',
+        'averageCount',
+        'baudRate',
+        'wavelengthMin',
+        'wavelengthMax',
+        'calibrationC0',
+        'calibrationC1',
+        'calibrationC2',
+        'calibrationC3'
+    ].forEach(id => {
+        const control = document.getElementById(id);
+        if (!control) return;
+        const eventName = control.tagName === 'SELECT' ? 'change' : 'input';
+        control.addEventListener(eventName, () => spectrograph.saveControlSettings());
+    });
     
     // Setup resizable divider
     const divider = document.getElementById('resizableDivider');

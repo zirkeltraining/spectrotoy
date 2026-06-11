@@ -101,7 +101,7 @@
         }
 
         .header-status {
-            min-width: 190px;
+            min-width: 250px;
             background: rgba(255, 255, 255, 0.06);
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 14px;
@@ -117,6 +117,30 @@
             color: rgba(192, 213, 236, 0.78);
             margin-bottom: 8px;
             font-weight: 700;
+        }
+
+        .header-link-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: rgba(247, 251, 255, 0.92);
+            font-size: 0.9rem;
+            font-weight: 700;
+        }
+
+        .header-link-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .header-link-actions button {
+            width: 100%;
+            padding: 8px 10px;
+            border-radius: 9px;
+            font-size: 0.82rem;
+            box-shadow: 0 8px 16px rgba(7, 18, 31, 0.16);
         }
 
         .main-content-wrapper {
@@ -169,8 +193,67 @@
             letter-spacing: -0.02em;
         }
 
+        .control-section {
+            margin-bottom: 8px;
+            border: 1px solid #d5e0eb;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.58);
+            overflow: hidden;
+        }
+
+        .section-toggle {
+            width: 100%;
+            padding: 10px 12px;
+            border: none;
+            border-radius: 0;
+            background: transparent;
+            color: var(--muted);
+            box-shadow: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            font-size: 0.78rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+        }
+
+        .section-toggle:hover {
+            transform: none;
+            filter: none;
+            background: rgba(31, 143, 255, 0.08);
+            box-shadow: none;
+        }
+
+        .section-toggle::after {
+            content: '+';
+            color: var(--brand-strong);
+            font-size: 1rem;
+            line-height: 1;
+        }
+
+        .control-section.expanded .section-toggle::after {
+            content: '−';
+        }
+
+        .section-content {
+            display: none;
+            padding: 4px 12px 12px;
+        }
+
+        .control-section.expanded .section-content {
+            display: block;
+        }
+
         .control-group {
             margin-bottom: 18px;
+        }
+
+        .section-content .control-group:last-child,
+        .section-content .analysis-summary:last-child,
+        .section-content .log-container:last-child {
+            margin-bottom: 0;
         }
 
         .control-group label {
@@ -228,6 +311,42 @@
         .control-inline input,
         .control-inline select {
             flex: 1;
+        }
+
+        .control-action-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .setting-query-row {
+            grid-template-columns: auto minmax(0, 1fr) auto;
+        }
+
+        .control-action-row button {
+            width: auto;
+            white-space: nowrap;
+            padding-left: 12px;
+            padding-right: 12px;
+        }
+
+        .mode-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .mode-row button.mode-active {
+            background: linear-gradient(180deg, var(--success) 0%, #0f8c61 100%);
+            border-color: rgba(15, 140, 97, 0.65);
+            box-shadow: 0 10px 18px rgba(23, 166, 115, 0.24);
+        }
+
+        .coefficient-row {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px;
         }
 
         .control-value {
@@ -469,18 +588,6 @@
             margin: 0;
         }
 
-        .section-title {
-            font-size: 0.78rem;
-            font-weight: 800;
-            color: var(--muted);
-            margin-top: 22px;
-            margin-bottom: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.14em;
-            border-bottom: 1px solid #d5e0eb;
-            padding-bottom: 8px;
-        }
-
         .text-danger {
             color: #dc3545;
         }
@@ -571,6 +678,15 @@
             .chart-actions button {
                 width: 100%;
             }
+
+            .control-action-row,
+            .coefficient-row {
+                grid-template-columns: 1fr;
+            }
+
+            .control-action-row button {
+                width: 100%;
+            }
         }
     </style>
 </head>
@@ -584,187 +700,245 @@
             </div>
             <div class="header-status">
                 <span class="header-status-label">System Link</span>
-                <span class="status-indicator disconnected" id="statusIndicator"></span>
-                <span id="connectionStatus">Disconnected</span>
+                <div class="header-link-row">
+                    <span class="status-indicator disconnected" id="statusIndicator"></span>
+                    <span id="connectionStatus">Disconnected</span>
+                </div>
+                <div class="header-link-actions">
+                    <button id="connectBtn" onclick="connectDevice()">Connect</button>
+                    <button id="disconnectBtn" onclick="disconnectDevice()" disabled>Disconnect</button>
+                </div>
+                <div class="status-text" id="statusText" style="display: none;">
+                    Waiting for device...
+                </div>
             </div>
         </div>
 
         <div class="main-content-wrapper">
             <!-- Control Panel -->
             <div class="control-panel">
-                <h2>Connection</h2>
+                <div class="control-section" data-section="diagnostics">
+                    <button class="section-toggle" type="button" aria-expanded="false">Diagnostics</button>
+                    <div class="section-content">
+                        <div class="control-group">
+                            <button onclick="sendCommand('Q')">Reset Device</button>
+                        </div>
 
-                <button id="connectBtn" onclick="connectDevice()">Connect Device</button>
-                <button id="disconnectBtn" onclick="disconnectDevice()" disabled style="margin-top: 10px;">Disconnect</button>
-
-                <div class="status-text" id="statusText" style="display: none;">
-                    Waiting for device...
-                </div>
-
-                <div class="section-title">Diagnostics</div>
-
-                <div class="control-group">
-                    <button onclick="sendCommand('Q')">Reset Device</button>
-                </div>
-
-                <div class="button-group">
-                    <button onclick="sendCommand('a')">ASCII Mode</button>
-                    <button onclick="sendCommand('b')">Binary Mode</button>
-                </div>
-
-                <div class="control-group">
-                    <button onclick="queryValue('A')">Query Average</button>
-                    <button onclick="queryValue('I')" style="margin-top: 10px;">Query Integration</button>
-                </div>
-
-                <div class="section-title">Data</div>
-
-                <div class="control-group">
-                    <label for="csvImportFile">Import Raw Scan CSV</label>
-                    <input type="file" id="csvImportFile" accept=".csv,text/csv">
-                </div>
-
-                <div class="section-title">Settings</div>
-
-                <div class="control-group">
-                    <label for="integrationTime">Integration (ms)</label>
-                    <input type="number" id="integrationTime" value="100" min="50" max="65000">
-                    <button onclick="setSetting('I')" style="margin-top: 10px;">Set Integration</button>
-                </div>
-
-                <div class="control-group">
-                    <label for="averageCount">Averaging (samples)</label>
-                    <input type="number" id="averageCount" value="1" min="1" max="100">
-                    <button onclick="setSetting('A')" style="margin-top: 10px;">Set Average</button>
-                </div>
-
-                <div class="control-group">
-                    <label for="laserWavelength">Laser Wavelength (nm)</label>
-                    <input type="number" id="laserWavelength" value="532" min="1" step="0.001">
-                </div>
-
-                <div class="control-group">
-                    <label for="baudRate">Serial Baud Rate</label>
-                    <select id="baudRate">
-                        <option value="115200">115200</option>
-                        <option value="38400">38400</option>
-                        <option value="19200">19200</option>
-                        <option value="9600" selected>9600</option>
-                        <option value="4800">4800</option>
-                        <option value="2400">2400</option>
-                        <option value="1200">1200</option>
-                        <option value="600">600</option>
-                    </select>
-                    <button id="applyBaudBtn" onclick="applyBaudRate()" style="margin-top: 10px;" disabled>Apply Baud Rate</button>
-                </div>
-
-                <div class="section-title">Raman Processing</div>
-
-                <div class="control-group">
-                    <div class="control-inline">
-                        <input type="checkbox" id="analysisEnabled" checked>
-                        <label for="analysisEnabled" style="margin-bottom: 0;">Enable Analysis</label>
                     </div>
                 </div>
 
-                <div class="control-group">
-                    <label for="ramanMin">Raman Range (cm⁻¹)</label>
-                    <div class="control-inline">
-                        <input type="number" id="ramanMin" value="0" step="10">
-                        <input type="number" id="ramanMax" value="3400" step="10">
+                <div class="control-section" data-section="logs">
+                    <button class="section-toggle" type="button" aria-expanded="false">Logs</button>
+                    <div class="section-content">
+                        <div class="log-container" id="logContainer"></div>
                     </div>
                 </div>
 
-                <div class="control-group">
-                    <div class="control-inline">
-                        <input type="checkbox" id="spikeEnabled" checked>
-                        <label for="spikeEnabled" style="margin-bottom: 0;">Remove Spikes</label>
-                    </div>
-                    <div class="control-inline" style="margin-top: 8px;">
-                        <input type="range" id="spikeThreshold" min="2" max="15" step="0.1" value="8.5">
-                        <span class="control-value" id="spikeThresholdValue">8.5</span>
-                    </div>
-                </div>
-
-                <div class="control-group">
-                    <label for="baselineMethod">Baseline</label>
-                    <select id="baselineMethod">
-                        <option value="snip" selected>SNIP</option>
-                        <option value="als">ALS</option>
-                        <option value="arpls">arPLS</option>
-                        <option value="none">None</option>
-                    </select>
-                </div>
-
-                <div class="control-group">
-                    <label for="snipIterations">SNIP Iterations</label>
-                    <div class="control-inline">
-                        <input type="range" id="snipIterations" min="5" max="100" step="1" value="11">
-                        <span class="control-value" id="snipIterationsValue">11</span>
+                <div class="control-section" data-section="data">
+                    <button class="section-toggle" type="button" aria-expanded="false">Data</button>
+                    <div class="section-content">
+                        <div class="control-group">
+                            <label for="csvImportFile">Import Raw Scan CSV</label>
+                            <input type="file" id="csvImportFile" accept=".csv,text/csv">
+                        </div>
                     </div>
                 </div>
 
-                <div class="control-group">
-                    <label for="lambdaPower">ALS/arPLS λ (10ⁿ)</label>
-                    <div class="control-inline">
-                        <input type="range" id="lambdaPower" min="1" max="9" step="0.1" value="3.2">
-                        <span class="control-value" id="lambdaPowerValue">3.2</span>
+                <div class="control-section" data-section="settings">
+                    <button class="section-toggle" type="button" aria-expanded="false">Settings</button>
+                    <div class="section-content">
+                        <div class="control-group">
+                            <label for="integrationTime">Integration (ms)</label>
+                            <div class="control-action-row setting-query-row">
+                                <button onclick="queryValue('I')">Query</button>
+                                <input type="number" id="integrationTime" value="100" min="50" max="65000">
+                                <button onclick="setSetting('I')">Set</button>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label for="averageCount">Averaging (samples)</label>
+                            <div class="control-action-row setting-query-row">
+                                <button onclick="queryValue('A')">Query</button>
+                                <input type="number" id="averageCount" value="1" min="1" max="100">
+                                <button onclick="setSetting('A')">Set</button>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label>Transfer Mode</label>
+                            <div class="mode-row">
+                                <button id="asciiModeBtn" onclick="sendCommand('a')">ASCII</button>
+                                <button id="binaryModeBtn" onclick="sendCommand('b')">Binary</button>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label for="laserWavelength">Laser Wavelength (nm)</label>
+                            <input type="number" id="laserWavelength" value="532" min="1" step="0.001">
+                        </div>
+
+                        <div class="control-group">
+                            <label for="axisCalibrationMode">Sensor Axis</label>
+                            <select id="axisCalibrationMode">
+                                <option value="pixel" selected>Pixel index</option>
+                                <option value="linear">Assumed linear wavelength</option>
+                                <option value="polynomial">Polynomial wavelength</option>
+                            </select>
+                        </div>
+
+                        <div id="linearCalibrationControls" style="display: none;">
+                            <div class="control-group">
+                                <label for="wavelengthMin">Linear Range (nm)</label>
+                                <div class="control-inline">
+                                    <input type="number" id="wavelengthMin" value="400" step="0.001">
+                                    <input type="number" id="wavelengthMax" value="580" step="0.001">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="polynomialCalibrationControls" style="display: none;">
+                            <div class="control-group">
+                                <label for="calibrationC0">Polynomial Coefficients</label>
+                                <div class="coefficient-row">
+                                    <input type="number" id="calibrationC0" value="400" step="0.000001">
+                                    <input type="number" id="calibrationC1" value="0.087934" step="0.000001">
+                                    <input type="number" id="calibrationC2" value="0" step="0.000000001">
+                                    <input type="number" id="calibrationC3" value="0" step="0.000000000001">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <button onclick="applyAxisCalibration()">Apply Axis Calibration</button>
+                        </div>
+
+                        <div class="control-group">
+                            <label for="baudRate">Serial Baud Rate</label>
+                            <div class="control-action-row">
+                                <select id="baudRate">
+                                    <option value="115200">115200</option>
+                                    <option value="38400">38400</option>
+                                    <option value="19200">19200</option>
+                                    <option value="9600" selected>9600</option>
+                                    <option value="4800">4800</option>
+                                    <option value="2400">2400</option>
+                                    <option value="1200">1200</option>
+                                    <option value="600">600</option>
+                                </select>
+                                <button id="applyBaudBtn" onclick="applyBaudRate()" disabled>Apply</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
-                <div class="control-group">
-                    <label for="smoothingMethod">Smoothing</label>
-                    <select id="smoothingMethod">
-                        <option value="sg" selected>Savitzky-Golay</option>
-                        <option value="moving">Moving Average</option>
-                        <option value="none">None</option>
-                    </select>
-                </div>
+                <div class="control-section" data-section="raman">
+                    <button class="section-toggle" type="button" aria-expanded="false">Raman Processing</button>
+                    <div class="section-content">
+                        <div class="control-group">
+                            <div class="control-inline">
+                                <input type="checkbox" id="analysisEnabled" checked>
+                                <label for="analysisEnabled" style="margin-bottom: 0;">Enable Analysis</label>
+                            </div>
+                        </div>
 
-                <div class="control-group">
-                    <label for="smoothingWindow">Window / SG Order</label>
-                    <div class="control-inline">
-                        <input type="number" id="smoothingWindow" value="7" min="3" max="101" step="2">
-                        <input type="number" id="smoothingOrder" value="3" min="1" max="7" step="1">
+                        <div class="control-group">
+                            <label for="ramanMin">Raman Range (cm⁻¹)</label>
+                            <div class="control-inline">
+                                <input type="number" id="ramanMin" value="0" step="10">
+                                <input type="number" id="ramanMax" value="3400" step="10">
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-inline">
+                                <input type="checkbox" id="spikeEnabled" checked>
+                                <label for="spikeEnabled" style="margin-bottom: 0;">Remove Spikes</label>
+                            </div>
+                            <div class="control-inline" style="margin-top: 8px;">
+                                <input type="range" id="spikeThreshold" min="2" max="15" step="0.1" value="8.5">
+                                <span class="control-value" id="spikeThresholdValue">8.5</span>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label for="baselineMethod">Baseline</label>
+                            <select id="baselineMethod">
+                                <option value="snip" selected>SNIP</option>
+                                <option value="als">ALS</option>
+                                <option value="arpls">arPLS</option>
+                                <option value="none">None</option>
+                            </select>
+                        </div>
+
+                        <div class="control-group">
+                            <label for="snipIterations">SNIP Iterations</label>
+                            <div class="control-inline">
+                                <input type="range" id="snipIterations" min="5" max="100" step="1" value="11">
+                                <span class="control-value" id="snipIterationsValue">11</span>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label for="lambdaPower">ALS/arPLS λ (10ⁿ)</label>
+                            <div class="control-inline">
+                                <input type="range" id="lambdaPower" min="1" max="9" step="0.1" value="3.2">
+                                <span class="control-value" id="lambdaPowerValue">3.2</span>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label for="smoothingMethod">Smoothing</label>
+                            <select id="smoothingMethod">
+                                <option value="sg" selected>Savitzky-Golay</option>
+                                <option value="moving">Moving Average</option>
+                                <option value="none">None</option>
+                            </select>
+                        </div>
+
+                        <div class="control-group">
+                            <label for="smoothingWindow">Window / SG Order</label>
+                            <div class="control-inline">
+                                <input type="number" id="smoothingWindow" value="7" min="3" max="101" step="2">
+                                <input type="number" id="smoothingOrder" value="3" min="1" max="7" step="1">
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <label for="normalizationMethod">Normalization</label>
+                            <select id="normalizationMethod">
+                                <option value="max" selected>Max = 1</option>
+                                <option value="area">Area = 1</option>
+                                <option value="snv">SNV</option>
+                                <option value="none">None</option>
+                            </select>
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-inline">
+                                <input type="checkbox" id="peaksEnabled" checked>
+                                <label for="peaksEnabled" style="margin-bottom: 0;">Detect Peaks</label>
+                            </div>
+                            <div class="control-inline" style="margin-top: 8px;">
+                                <input type="number" id="peakHeightPercent" value="12" min="1" max="80" step="1">
+                                <input type="number" id="peakDistance" value="30" min="5" max="300" step="5">
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-inline">
+                                <input type="checkbox" id="showRawSpectrum" checked>
+                                <label for="showRawSpectrum" style="margin-bottom: 0;">Raw Overlay</label>
+                            </div>
+                            <div class="control-inline" style="margin-top: 8px;">
+                                <input type="checkbox" id="showBaselineSpectrum" checked>
+                                <label for="showBaselineSpectrum" style="margin-bottom: 0;">Baseline Overlay</label>
+                            </div>
+                        </div>
+
+                        <div class="analysis-summary" id="analysisSummary">No processed spectrum yet.</div>
                     </div>
                 </div>
-
-                <div class="control-group">
-                    <label for="normalizationMethod">Normalization</label>
-                    <select id="normalizationMethod">
-                        <option value="max" selected>Max = 1</option>
-                        <option value="area">Area = 1</option>
-                        <option value="snv">SNV</option>
-                        <option value="none">None</option>
-                    </select>
-                </div>
-
-                <div class="control-group">
-                    <div class="control-inline">
-                        <input type="checkbox" id="peaksEnabled" checked>
-                        <label for="peaksEnabled" style="margin-bottom: 0;">Detect Peaks</label>
-                    </div>
-                    <div class="control-inline" style="margin-top: 8px;">
-                        <input type="number" id="peakHeightPercent" value="12" min="1" max="80" step="1">
-                        <input type="number" id="peakDistance" value="30" min="5" max="300" step="5">
-                    </div>
-                </div>
-
-                <div class="control-group">
-                    <div class="control-inline">
-                        <input type="checkbox" id="showRawSpectrum" checked>
-                        <label for="showRawSpectrum" style="margin-bottom: 0;">Raw Overlay</label>
-                    </div>
-                    <div class="control-inline" style="margin-top: 8px;">
-                        <input type="checkbox" id="showBaselineSpectrum" checked>
-                        <label for="showBaselineSpectrum" style="margin-bottom: 0;">Baseline Overlay</label>
-                    </div>
-                </div>
-
-                <div class="analysis-summary" id="analysisSummary">No processed spectrum yet.</div>
-
-                <div class="section-title">Log</div>
-                <div class="log-container" id="logContainer"></div>
             </div>
 
             <!-- Resizable Divider -->
@@ -777,7 +951,7 @@
                     <div class="chart-header">
                         <div>
                             <h2>Spectral Data</h2>
-                            <div class="chart-subtitle">Live intensity profile across the calibrated wavelength range.</div>
+                            <div class="chart-subtitle">Live intensity profile across the current sensor axis.</div>
                         </div>
                         <div class="chart-actions">
                             <button id="scanBtn" onclick="performScan()" disabled>Acquire Scan</button>
@@ -793,9 +967,9 @@
                 <!-- Info Panel -->
                 <div class="info-panel">
                     <div class="info-card">
-                        <h3>Peak Wavelength</h3>
+                        <h3 id="peakAxisLabel">Peak Pixel</h3>
                         <div class="value" id="peakWavelength">—</div>
-                        <div class="unit">nm</div>
+                        <div class="unit">px</div>
                     </div>
                     <div class="info-card">
                         <h3>Peak Intensity</h3>

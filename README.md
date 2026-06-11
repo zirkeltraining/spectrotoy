@@ -25,7 +25,7 @@ Work in progress!
 - ✅ **Spike Removal**: Cosmic-ray style spike detection and interpolation
 - ✅ **Smoothing and Normalization**: Savitzky-Golay, moving average, max/area/SNV normalization
 - ✅ **Peak Detection and Labeling**: Detect peaks in the processed waveform and label Raman shifts
-- ✅ **CubeRaman CSV Export**: Save raw or processed data in SpectrumPro-compatible CSV format
+- ✅ **SpectrumPro CSV Export**: Save raw data with SpectrumPro-style metadata and spectrum columns
 
 ## Hardware Requirements
 
@@ -69,11 +69,11 @@ Work in progress!
    - Peak wavelength and intensity appear in the statistics panel
    - All commands/responses logged in the control panel
    - Enable **"Raman Processing"** options to view baseline-corrected spectra
-   - Click **"Export CSV"** after a scan to save a CubeRaman SpectrumPro-compatible file
+   - Click **"Export CSV"** after a scan to save a SpectrumPro-style file
 
 6. **Import Existing Data**:
    - Use **"Import Raw Scan CSV"** to load a scan from disk
-   - Supported inputs include one-column intensity CSVs and `Wavelength,Averaged` exports
+   - Supported inputs include one-column intensity CSVs, `Wavelength,Averaged` exports, and SpectrumPro-style five-column exports
    - Imported wavelength columns are preserved row-for-row so processed peak labels can be compared directly with CubeRaman/SpectrumPro
 
 ## Device Communication Protocol
@@ -109,11 +109,15 @@ More efficient encoding where each pixel is compared to the previous:
 
 ## Calibration
 
-### Default Linear Calibration
-By default, the application uses a linear wavelength mapping:
-- **Pixel 0** → 400 nm (blue)
-- **Pixel 2047** → 580 nm (red)
-- Operating range: 400-580 nm
+### Default Axis
+By default, the application treats live scans as uncalibrated sensor pixels:
+- **Pixel 0** → first detector sample
+- **Pixel 2047** → last detector sample
+- Exports write `Pixel,Averaged` until a wavelength mapping is selected or imported
+
+The BTC100-2S in this project is not assumed to be factory wavelength-calibrated. The former 400-580 nm linear range is available as an explicit operator assumption under **Axis Calibration → Assumed linear wavelength**, but it should not be treated as measured calibration data.
+
+Raman processing requires a wavelength axis. It runs only after applying a linear/polynomial wavelength mapping or importing a CSV with wavelength/shift values.
 
 ### Polynomial Calibration
 For better accuracy, calibrate using known reference wavelengths:
@@ -121,13 +125,20 @@ For better accuracy, calibrate using known reference wavelengths:
 1. Point the spectrometer at a CFL or discharge lamp
 2. Identify spectral peaks using reference data (e.g., Mercury: 404.7, 435.8, 546.1, 579.0 nm)
 3. Record pixel positions of known wavelengths
-4. In the browser console, call:
+4. Fit coefficients for:
+   ```text
+   wavelength_nm = c0 + c1*pixel + c2*pixel^2 + c3*pixel^3
+   ```
+5. In **Axis Calibration**, choose **Polynomial wavelength**, enter `c0`, `c1`, `c2`, and `c3`, then click **Apply Axis Calibration**
+
+Applied axis calibration is saved in browser local storage and restored on the next visit.
+
+You can also apply coefficients from the browser console:
    ```javascript
    spectrograph.updateCalibration(c0, c1, c2, c3);
    ```
-   Where coefficients create the fit: λ = c0 + c1×pixel + c2×pixel² + c3×pixel³
 
-### Example Calibration (Console)
+### Example Calibration
 ```javascript
 // CFL calibration data for this unit
 spectrograph.updateCalibration(404.2, 0.0865, 0.00000, 0.00000);
@@ -172,13 +183,17 @@ spectrograph.updateCalibration(404.2, 0.0865, 0.00000, 0.00000);
 3. Click "Export CSV"
 ```
 
-When Raman processing is disabled, the exported CSV writes four metadata rows followed by `Wavelength,Averaged`. Wavelength values are calibrated nanometers, and intensity values are detector counts.
-
-When Raman processing is enabled, the exported CSV writes processed columns:
+The exported CSV matches the SpectrumPro-style raw scan layout:
 
 ```
-Raman_Shift_cm1,Raw_Intensity,Cleaned_Intensity,Baseline,Processed_Intensity
+Scan Date:,2026-03-24 01:26:13Z
+Integration Time:,1500
+Number of Averages:,25
+
+Pixel Number,Wavelength (nm),Sum Spectrum,Averaged Spectrum,Background Spectrum
 ```
+
+`Averaged Spectrum` is the active intensity trace. If no background data is available, `Background Spectrum` is written as `0`. If no wavelength calibration is active, the wavelength field is left blank.
 
 ### 6. Offline Raman Processing
 ```
@@ -188,7 +203,7 @@ Raman_Shift_cm1,Raw_Intensity,Cleaned_Intensity,Baseline,Processed_Intensity
 4. Compare detected peak labels against another processing workflow
 ```
 
-The importer looks for common column names such as `Wavelength`, `Averaged`, `Raw_Intensity`, `Intensity`, `Counts`, and `Raman_Shift_cm1`. If wavelength values are present, they are used directly instead of reconstructing the x-axis from a min/max range.
+The importer looks for common column names such as `Wavelength`, `Averaged Spectrum`, `Sum Spectrum`, `Background Spectrum`, `Raw_Intensity`, `Intensity`, `Counts`, and `Raman_Shift_cm1`. For SpectrumPro-style files, `Averaged Spectrum` is used as the active intensity trace and wavelength values are preserved row-for-row.
 
 ## Raman Processing
 
@@ -270,7 +285,8 @@ Available controls:
 
 ## Data Interpretation
 
-- **Wavelength Range**: 400-580 nm (designed range for BTC100-2S)
+- **Default Axis**: 2048 uncalibrated sensor pixels
+- **Assumed Wavelength Range**: 400-580 nm only when explicitly selected
 - **Pixel Count**: 2048 pixels total
 - **Max Value**: 65535 counts (uint16 maximum)
 - **Noise Floor**: Expected ~1000-2000 counts on cold sensor with no input
