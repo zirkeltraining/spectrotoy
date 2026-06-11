@@ -14,6 +14,18 @@ class SpectrographDiagnostic {
         this.currentWavelengths = null;
         this.currentSpectrumColumns = null;
         this.currentScanMetadata = null;
+        this.currentStoredScanId = null;
+        this.calibrationPeaks = [];
+        this.lastCalibrationFit = null;
+        this.xDomainMin = 0;
+        this.xDomainMax = 2047;
+        this.xViewMin = null;
+        this.xViewMax = null;
+        this.isPanningChart = false;
+        this.panStartClientX = 0;
+        this.panStartMin = 0;
+        this.panStartMax = 0;
+        this.panPointerId = null;
         this.asciiMode = true;
         this.pendingQueryParam = null;
         this.awaitingBinaryScan = false;
@@ -23,6 +35,11 @@ class SpectrographDiagnostic {
         this.pendingBaudRate = 9600;
         this.axisCalibrationStorageKey = 'spectrotoyAxisCalibration';
         this.settingsStorageKey = 'spectrotoyControlSettings';
+        this.scanDbName = 'spectrotoyLocalScans';
+        this.scanDbVersion = 1;
+        this.scanStoreName = 'scans';
+        this.scanDbPromise = null;
+        this.storedScans = [];
         this.scanStartTime = 0;
         this.lastBinaryByteTime = 0;
         this.lastScanCommandTime = 0;
@@ -179,6 +196,7 @@ class SpectrographDiagnostic {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: false,
+                events: ['click'],
                 plugins: {
                     legend: {
                         display: true,
@@ -245,6 +263,244 @@ class SpectrographDiagnostic {
                     }
                 }
             }
+        });
+        this.setupChartInteractions();
+    }
+
+    setupChartInteractions() {
+        const canvas = document.getElementById('spectrumChart');
+        if (!canvas) return;
+
+        canvas.addEventListener('wheel', event => {
+            if (!this.currentData && !this.currentAnalysis) return;
+            event.preventDefault();
+
+            const chartArea = this.chart.chartArea;
+            if (!chartArea) return;
+
+            const xValue = this.chart.scales.x.getValueForPixel(event.offsetX);
+            if (!Number.isFinite(xValue)) return;
+
+            if (Math.abs(event.deltaX) > Math.abs(event.deltaY) && this.isXZoomed()) {
+                this.panXByPixels(event.deltaX);
+            } else {
+                const zoomFactor = Math.exp(event.deltaY * 0.0015);
+                this.zoomXAt(xValue, zoomFactor);
+            }
+
+            this.updateCursorFromEvent(event);
+        }, { passive: false });
+
+        canvas.addEventListener('pointerdown', event => {
+            this.updateCursorFromEvent(event);
+            if (event.pointerType !== 'mouse' || event.button !== 0) return;
+            if (!this.isXZoomed()) return;
+
+            this.isPanningChart = true;
+            this.panPointerId = event.pointerId;
+            this.panStartClientX = event.clientX;
+            this.panStartMin = this.chart.options.scales.x.min;
+            this.panStartMax = this.chart.options.scales.x.max;
+            canvas.setPointerCapture?.(event.pointerId);
+        });
+
+        canvas.addEventListener('pointermove', event => {
+            this.updateCursorFromEvent(event);
+            if (!this.isPanningChart || event.pointerId !== this.panPointerId) return;
+            event.preventDefault();
+            const deltaPx = event.clientX - this.panStartClientX;
+            this.panXFromStart(deltaPx);
+        });
+
+        const stopPan = event => {
+            if (event.pointerId !== this.panPointerId) return;
+            this.isPanningChart = false;
+            this.panPointerId = null;
+            canvas.releasePointerCapture?.(event.pointerId);
+        };
+
+        canvas.addEventListener('pointerup', stopPan);
+        canvas.addEventListener('pointercancel', stopPan);
+        canvas.addEventListener('pointerleave', event => {
+            if (!this.isPanningChart) {
+                this.clearChartCursor();
+            } else {
+                stopPan(event);
+            }
+        });
+
+        canvas.addEventListener('dblclick', () => this.resetXZoom());
+    }
+
+    getXRange() {
+        return this.xDomainMax - this.xDomainMin;
+    }
+
+    isXZoomed() {
+        return this.xViewMin !== null && this.xViewMax !== null &&
+            (Math.abs(this.xViewMin - this.xDomainMin) > 1e-9 || Math.abs(this.xViewMax - this.xDomainMax) > 1e-9);
+    }
+
+    setXDomain(min, max) {
+        if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return;
+        this.xDomainMin = min;
+        this.xDomainMax = max;
+
+        if (this.xViewMin === null || this.xViewMax === null) {
+            this.chart.options.scales.x.min = min;
+            this.chart.options.scales.x.max = max;
+            return;
+        }
+
+        const width = Math.min(this.xViewMax - this.xViewMin, max - min);
+        let nextMin = Math.max(min, Math.min(this.xViewMin, max - width));
+        this.xViewMin = nextMin;
+        this.xViewMax = nextMin + width;
+        this.chart.options.scales.x.min = this.xViewMin;
+        this.chart.options.scales.x.max = this.xViewMax;
+    }
+
+    applyXView(min, max) {
+        const domainWidth = this.getXRange();
+        const minWidth = Math.max(domainWidth / 200, 1e-9);
+        let width = Math.max(minWidth, Math.min(max - min, domainWidth));
+        let nextMin = Math.max(this.xDomainMin, Math.min(min, this.xDomainMax - width));
+
+        this.xViewMin = nextMin;
+        this.xViewMax = nextMin + width;
+        this.chart.options.scales.x.min = this.xViewMin;
+        this.chart.options.scales.x.max = this.xViewMax;
+        this.chart.update('none');
+    }
+
+    zoomXAt(center, factor) {
+        const currentMin = this.chart.options.scales.x.min;
+        const currentMax = this.chart.options.scales.x.max;
+        const currentWidth = currentMax - currentMin;
+        if (!Number.isFinite(currentWidth) || currentWidth <= 0) return;
+
+        const nextWidth = currentWidth * factor;
+        const ratio = (center - currentMin) / currentWidth;
+        const nextMin = center - nextWidth * ratio;
+        this.applyXView(nextMin, nextMin + nextWidth);
+    }
+
+    panXByPixels(deltaPx) {
+        const scale = this.chart.scales.x;
+        const width = this.chart.options.scales.x.max - this.chart.options.scales.x.min;
+        const deltaValue = (deltaPx / Math.max(1, scale.width)) * width;
+        this.applyXView(this.chart.options.scales.x.min + deltaValue, this.chart.options.scales.x.max + deltaValue);
+    }
+
+    panXFromStart(deltaPx) {
+        const scale = this.chart.scales.x;
+        const width = this.panStartMax - this.panStartMin;
+        const deltaValue = -(deltaPx / Math.max(1, scale.width)) * width;
+        this.applyXView(this.panStartMin + deltaValue, this.panStartMax + deltaValue);
+    }
+
+    resetXZoom() {
+        this.xViewMin = null;
+        this.xViewMax = null;
+        this.chart.options.scales.x.min = this.xDomainMin;
+        this.chart.options.scales.x.max = this.xDomainMax;
+        this.chart.update('none');
+    }
+
+    updateCursorFromEvent(event) {
+        if (!this.chart?.chartArea) return;
+        const area = this.chart.chartArea;
+        const rect = this.chart.canvas.getBoundingClientRect();
+        const xPixel = event.clientX - rect.left;
+        const yPixel = event.clientY - rect.top;
+        if (xPixel < area.left || xPixel > area.right || yPixel < area.top || yPixel > area.bottom) {
+            this.clearChartCursor();
+            return;
+        }
+
+        const xValue = this.chart.scales.x.getValueForPixel(xPixel);
+        if (!Number.isFinite(xValue)) return;
+
+        const { min: yMin, max: yMax } = this.getVisibleChartYBounds();
+        this.chart.data.datasets[4].data = [
+            { x: xValue, y: yMin },
+            { x: xValue, y: yMax }
+        ];
+
+        this.activateNearestTooltipPoint(xValue);
+        this.chart.update('none');
+    }
+
+    clearChartCursor() {
+        if (!this.chart) return;
+        this.chart.data.datasets[4].data = [];
+        this.chart.setActiveElements([]);
+        this.chart.tooltip?.setActiveElements([], { x: 0, y: 0 });
+        this.chart.update('none');
+    }
+
+    getVisibleChartYBounds() {
+        const yScale = this.chart.scales.y;
+        if (Number.isFinite(yScale?.min) && Number.isFinite(yScale?.max) && yScale.max > yScale.min) {
+            return { min: yScale.min, max: yScale.max };
+        }
+
+        const datasets = this.chart.data.datasets.slice(0, 4);
+        const bounds = datasets.reduce((best, dataset, datasetIndex) => {
+            if (this.chart.getDatasetMeta(datasetIndex).hidden) return best;
+            dataset.data.forEach(point => {
+                const y = typeof point === 'number' ? point : point?.y;
+                if (!Number.isFinite(y)) return;
+                best.min = Math.min(best.min, y);
+                best.max = Math.max(best.max, y);
+            });
+            return best;
+        }, { min: 0, max: 1 });
+
+        if (bounds.max <= bounds.min) bounds.max = bounds.min + 1;
+        return bounds;
+    }
+
+    activateNearestTooltipPoint(xValue) {
+        const activeElements = [];
+        let anchorX = xValue;
+        let anchorDistance = Infinity;
+
+        this.chart.data.datasets.slice(0, 4).forEach((dataset, datasetIndex) => {
+            if (this.chart.getDatasetMeta(datasetIndex).hidden) return;
+            let best = null;
+
+            dataset.data.forEach((point, index) => {
+                if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
+                const distance = Math.abs(point.x - xValue);
+                if (!best || distance < best.distance) {
+                    best = { datasetIndex, index, distance, x: point.x };
+                }
+            });
+
+            if (!best) return;
+
+            const xPixel = this.chart.scales.x.getPixelForValue(best.x);
+            const cursorPixel = this.chart.scales.x.getPixelForValue(xValue);
+            const pixelDistance = Math.abs(xPixel - cursorPixel);
+            const isSparseMarkerDataset = dataset.showLine === false;
+            if (isSparseMarkerDataset && pixelDistance > 10) return;
+
+            activeElements.push({ datasetIndex: best.datasetIndex, index: best.index });
+            if (best.distance < anchorDistance) {
+                anchorDistance = best.distance;
+                anchorX = best.x;
+            }
+        });
+
+        if (!activeElements.length) return;
+
+        const xPixel = this.chart.scales.x.getPixelForValue(anchorX);
+        const yPixel = this.chart.chartArea.top + 8;
+        this.chart.setActiveElements(activeElements);
+        this.chart.tooltip?.setActiveElements(activeElements, {
+            x: xPixel,
+            y: yPixel
         });
     }
 
@@ -410,6 +666,289 @@ class SpectrographDiagnostic {
         }
     }
 
+    findCalibrationPeaks() {
+        if (!Array.isArray(this.currentData) || this.currentData.length < 3) {
+            this.log('Load or acquire a reference spectrum before finding calibration peaks', 'error');
+            return;
+        }
+
+        const maxValue = Math.max(...this.currentData);
+        const minValue = Math.min(...this.currentData);
+        const range = Math.max(maxValue - minValue, 1e-12);
+        const normalized = this.currentData.map(value => (value - minValue) / range);
+        const heightPercent = this.readNumberInput('calibrationPeakHeight', 12);
+        const minDistance = Math.max(1, Math.round(this.readNumberInput('calibrationPeakDistance', 30)));
+        const peakLimit = Math.max(2, Math.round(this.readNumberInput('calibrationPeakLimit', 12)));
+        const minHeight = Math.max(0, Math.min(1, heightPercent / 100));
+
+        const peaks = RamanProcessing.findPeaks(normalized, { minHeight, minDistance })
+            .map(peak => this.refineCalibrationPeak(peak.index))
+            .sort((a, b) => b.intensity - a.intensity)
+            .slice(0, peakLimit)
+            .sort((a, b) => a.pixel - b.pixel);
+
+        this.calibrationPeaks = peaks.map(peak => ({
+            ...peak,
+            wavelength: '',
+            residual: null,
+            enabled: true
+        }));
+        this.lastCalibrationFit = null;
+
+        this.renderCalibrationPeakTable();
+        this.renderCalibrationPeakChart();
+        this.updateCalibrationFitSummary(`${this.calibrationPeaks.length} candidate peak(s) found. Enter known wavelengths in nm, then fit coefficients.`);
+        this.log(`Found ${this.calibrationPeaks.length} calibration peak candidate(s)`, 'info');
+    }
+
+    refineCalibrationPeak(index) {
+        const data = this.currentData;
+        const y0 = data[index - 1] ?? data[index];
+        const y1 = data[index];
+        const y2 = data[index + 1] ?? data[index];
+        const denominator = y0 - 2 * y1 + y2;
+        let offset = 0;
+
+        if (Math.abs(denominator) > 1e-12) {
+            offset = 0.5 * (y0 - y2) / denominator;
+            offset = Math.max(-0.5, Math.min(0.5, offset));
+        }
+
+        const pixel = index + offset;
+        return {
+            index,
+            pixel,
+            intensity: y1
+        };
+    }
+
+    renderCalibrationPeakChart() {
+        if (!Array.isArray(this.currentData) || !this.chart) return;
+
+        this.currentAnalysis = null;
+        this.chart.data.datasets[0].data = this.currentData.map((value, index) => ({ x: index, y: value }));
+        this.chart.data.datasets[0].hidden = false;
+        this.chart.data.datasets[1].data = [];
+        this.chart.data.datasets[2].data = [];
+        this.chart.data.datasets[3].data = this.calibrationPeaks.map(peak => ({
+            x: peak.pixel,
+            y: peak.intensity
+        }));
+        this.chart.data.datasets[3].hidden = false;
+        this.chart.data.datasets[4].data = [];
+        this.chart.options.scales.x.title.text = 'Sensor Pixel';
+        this.setXDomain(0, this.currentData.length - 1);
+        this.chart.options.scales.y.suggestedMin = 0;
+        this.chart.options.scales.y.max = undefined;
+        this.chart.options.scales.y.beginAtZero = true;
+        this.chart.update('none');
+    }
+
+    renderCalibrationPeakTable() {
+        const wrap = document.getElementById('calibrationPeakTableWrap');
+        if (!wrap) return;
+
+        if (!this.calibrationPeaks.length) {
+            wrap.innerHTML = '';
+            return;
+        }
+
+        wrap.innerHTML = `
+            <table class="calibration-peak-table">
+                <thead>
+                    <tr>
+                        <th>Use</th>
+                        <th>Pixel</th>
+                        <th>Intensity</th>
+                        <th>Known nm</th>
+                        <th>Residual</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${this.calibrationPeaks.map((peak, index) => `
+                        <tr>
+                            <td><input type="checkbox" data-calibration-use="${index}" ${peak.enabled ? 'checked' : ''}></td>
+                            <td>${peak.pixel.toFixed(2)}</td>
+                            <td>${Math.round(peak.intensity).toLocaleString()}</td>
+                            <td><input type="number" data-calibration-wavelength="${index}" value="${this.escapeHtml(String(peak.wavelength ?? ''))}" step="0.001" placeholder="nm"></td>
+                            <td>${Number.isFinite(peak.residual) ? peak.residual.toFixed(4) : '—'}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+
+        wrap.querySelectorAll('[data-calibration-wavelength]').forEach(input => {
+            input.addEventListener('input', () => {
+                const index = Number(input.dataset.calibrationWavelength);
+                if (this.calibrationPeaks[index]) this.calibrationPeaks[index].wavelength = input.value;
+            });
+        });
+
+        wrap.querySelectorAll('[data-calibration-use]').forEach(input => {
+            input.addEventListener('change', () => {
+                const index = Number(input.dataset.calibrationUse);
+                if (this.calibrationPeaks[index]) this.calibrationPeaks[index].enabled = input.checked;
+            });
+        });
+    }
+
+    fitCalibrationPeaks() {
+        this.syncCalibrationPeakInputs();
+
+        const order = Math.max(1, Math.min(3, Math.round(this.readNumberInput('calibrationFitOrder', 2))));
+        const pairs = this.calibrationPeaks
+            .filter(peak => peak.enabled !== false)
+            .map(peak => ({
+                pixel: Number(peak.pixel),
+                wavelength: Number.parseFloat(peak.wavelength)
+            }))
+            .filter(pair => Number.isFinite(pair.pixel) && Number.isFinite(pair.wavelength));
+
+        if (pairs.length < order + 1) {
+            this.log(`Need at least ${order + 1} enabled wavelength matches for this fit order`, 'error');
+            this.updateCalibrationFitSummary(`Need at least ${order + 1} enabled wavelength matches for this fit order.`);
+            return;
+        }
+
+        const coefficients = this.fitPolynomialLeastSquares(pairs, order);
+        if (!coefficients) {
+            this.log('Calibration fit failed: matrix could not be solved', 'error');
+            this.updateCalibrationFitSummary('Fit failed. Check that matched peaks are distinct and wavelengths are numeric.');
+            return;
+        }
+
+        const fullCoefficients = [0, 0, 0, 0];
+        coefficients.forEach((value, index) => {
+            fullCoefficients[index] = value;
+        });
+
+        const residuals = pairs.map(pair => {
+            const fitted = this.evaluatePolynomial(fullCoefficients, pair.pixel);
+            return {
+                ...pair,
+                fitted,
+                residual: fitted - pair.wavelength
+            };
+        });
+        const rms = Math.sqrt(residuals.reduce((sum, item) => sum + item.residual * item.residual, 0) / residuals.length);
+        const maxAbs = Math.max(...residuals.map(item => Math.abs(item.residual)));
+
+        this.calibrationPeaks = this.calibrationPeaks.map(peak => {
+            const match = residuals.find(item => Math.abs(item.pixel - peak.pixel) < 1e-9);
+            return {
+                ...peak,
+                residual: match ? match.residual : null
+            };
+        });
+
+        ['calibrationC0', 'calibrationC1', 'calibrationC2', 'calibrationC3'].forEach((id, index) => {
+            this.setInputValue(id, fullCoefficients[index]);
+        });
+        const modeSelect = document.getElementById('axisCalibrationMode');
+        if (modeSelect) modeSelect.value = 'polynomial';
+
+        this.lastCalibrationFit = { coefficients: fullCoefficients, residuals, rms, maxAbs, order };
+        this.renderCalibrationPeakTable();
+        this.updateCalibrationFitSummary(`Fit order ${order}: RMS ${rms.toFixed(4)} nm, max residual ${maxAbs.toFixed(4)} nm. Coefficients are staged; click Apply Axis Calibration to use them.`);
+        this.log(`Calibration fit complete: RMS ${rms.toFixed(4)} nm`, 'success');
+    }
+
+    syncCalibrationPeakInputs() {
+        document.querySelectorAll('[data-calibration-wavelength]').forEach(input => {
+            const index = Number(input.dataset.calibrationWavelength);
+            if (this.calibrationPeaks[index]) this.calibrationPeaks[index].wavelength = input.value;
+        });
+
+        document.querySelectorAll('[data-calibration-use]').forEach(input => {
+            const index = Number(input.dataset.calibrationUse);
+            if (this.calibrationPeaks[index]) this.calibrationPeaks[index].enabled = input.checked;
+        });
+    }
+
+    fitPolynomialLeastSquares(pairs, order) {
+        const size = order + 1;
+        const matrix = Array.from({ length: size }, () => Array(size).fill(0));
+        const rhs = Array(size).fill(0);
+        const pixels = pairs.map(pair => pair.pixel);
+        const offset = pixels.reduce((sum, pixel) => sum + pixel, 0) / pixels.length;
+        const scale = Math.max(...pixels.map(pixel => Math.abs(pixel - offset)), 1);
+
+        pairs.forEach(({ pixel, wavelength }) => {
+            const x = (pixel - offset) / scale;
+            const powers = Array.from({ length: size }, (_, index) => x ** index);
+            for (let row = 0; row < size; row += 1) {
+                rhs[row] += powers[row] * wavelength;
+                for (let col = 0; col < size; col += 1) {
+                    matrix[row][col] += powers[row] * powers[col];
+                }
+            }
+        });
+
+        const scaledCoefficients = this.solveLinearSystem(matrix, rhs);
+        return scaledCoefficients ? this.convertScaledPolynomialCoefficients(scaledCoefficients, offset, scale) : null;
+    }
+
+    convertScaledPolynomialCoefficients(scaledCoefficients, offset, scale) {
+        const coefficients = [0, 0, 0, 0];
+        const binomial = [
+            [1],
+            [1, 1],
+            [1, 2, 1],
+            [1, 3, 3, 1]
+        ];
+
+        scaledCoefficients.forEach((coefficient, power) => {
+            for (let rawPower = 0; rawPower <= power; rawPower += 1) {
+                const factor = binomial[power][rawPower] *
+                    ((-offset) ** (power - rawPower)) /
+                    (scale ** power);
+                coefficients[rawPower] += coefficient * factor;
+            }
+        });
+
+        return coefficients.slice(0, scaledCoefficients.length);
+    }
+
+    solveLinearSystem(matrix, rhs) {
+        const n = rhs.length;
+        const a = matrix.map((row, index) => [...row, rhs[index]]);
+
+        for (let col = 0; col < n; col += 1) {
+            let pivot = col;
+            for (let row = col + 1; row < n; row += 1) {
+                if (Math.abs(a[row][col]) > Math.abs(a[pivot][col])) pivot = row;
+            }
+
+            if (Math.abs(a[pivot][col]) < 1e-12) return null;
+            if (pivot !== col) [a[pivot], a[col]] = [a[col], a[pivot]];
+
+            const pivotValue = a[col][col];
+            for (let item = col; item <= n; item += 1) {
+                a[col][item] /= pivotValue;
+            }
+
+            for (let row = 0; row < n; row += 1) {
+                if (row === col) continue;
+                const factor = a[row][col];
+                for (let item = col; item <= n; item += 1) {
+                    a[row][item] -= factor * a[col][item];
+                }
+            }
+        }
+
+        return a.map(row => row[n]);
+    }
+
+    evaluatePolynomial(coefficients, pixel) {
+        return coefficients.reduce((sum, coefficient, index) => sum + coefficient * (pixel ** index), 0);
+    }
+
+    updateCalibrationFitSummary(message) {
+        const summary = document.getElementById('calibrationFitSummary');
+        if (summary) summary.textContent = message;
+    }
+
     syncAxisCalibrationUI() {
         const mode = document.getElementById('axisCalibrationMode')?.value || this.calibrationMode;
         const linearControls = document.getElementById('linearCalibrationControls');
@@ -431,6 +970,10 @@ class SpectrographDiagnostic {
             'calibrationC1',
             'calibrationC2',
             'calibrationC3',
+            'calibrationPeakHeight',
+            'calibrationPeakDistance',
+            'calibrationFitOrder',
+            'calibrationPeakLimit',
             'analysisEnabled',
             'ramanMin',
             'ramanMax',
@@ -443,11 +986,8 @@ class SpectrographDiagnostic {
             'smoothingWindow',
             'smoothingOrder',
             'normalizationMethod',
-            'peaksEnabled',
             'peakHeightPercent',
-            'peakDistance',
-            'showRawSpectrum',
-            'showBaselineSpectrum'
+            'peakDistance'
         ];
     }
 
@@ -505,6 +1045,685 @@ class SpectrographDiagnostic {
                 toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
             });
         });
+    }
+
+    getHelpContent() {
+        return {
+            csvImportFile: {
+                title: 'Import Raw Scan CSV',
+                body: [
+                    'Loads an existing spectrum without connecting to the device. This is useful for offline Raman processing, comparing workflows, or saving imported data into local storage.',
+                    'Supported inputs include simple intensity lists, wavelength/intensity tables, Raman-shift tables, and SpectrumPro-style files with metadata plus Sum/Averaged/Background columns.',
+                    'Typical use: import a known reference scan, verify that the wavelength axis is preserved, then adjust Raman processing settings.'
+                ]
+            },
+            integrationTime: {
+                title: 'Integration Time',
+                body: [
+                    'Controls how long the detector collects light for each scan. Longer integration increases signal, but also raises the chance of saturation and drift.',
+                    'Typical starting points: 50-200 ms for bright sources, 500-2000 ms for moderate signals, and several seconds for weak Raman signals.',
+                    'Use the Query button to read the device value, edit the field, then Set to write it to the spectrometer.'
+                ]
+            },
+            averageCount: {
+                title: 'Averaging',
+                body: [
+                    'Sets how many scans are averaged by the device or acquisition workflow. More averages reduce random noise but make each measurement slower.',
+                    'Typical values: 1 for alignment and live feedback, 5-25 for routine spectra, and higher values for weak or noisy signals.',
+                    'Use Query to synchronize the UI with the device, then Set after changing the value.'
+                ]
+            },
+            transferMode: {
+                title: 'Transfer Mode',
+                body: [
+                    'Selects how scan data is sent over serial. ASCII is human-readable and easier to debug. Binary is more compact and faster, but depends on exact byte framing.',
+                    'Typical use: ASCII for setup, troubleshooting, and compatibility; Binary for faster repeated acquisition once communication is stable.',
+                    'The active mode is highlighted when the app knows the device state.'
+                ]
+            },
+            transfermode: {
+                title: 'Transfer Mode',
+                body: [
+                    'Selects how scan data is sent over serial. ASCII is human-readable and easier to debug. Binary is more compact and faster, but depends on exact byte framing.',
+                    'Typical use: ASCII for setup, troubleshooting, and compatibility; Binary for faster repeated acquisition once communication is stable.',
+                    'The active mode is highlighted when the app knows the device state.'
+                ]
+            },
+            laserWavelength: {
+                title: 'Laser Wavelength',
+                body: [
+                    'The excitation wavelength used for Raman shift conversion. Raman shift is calculated from the calibrated spectrum wavelength and this laser wavelength.',
+                    'Typical settings depend on your laser, for example 532 nm, 633 nm, or 785 nm. Enter the actual measured or specified laser wavelength when possible.',
+                    'This does not change raw acquisition; it changes the processed Raman x-axis.'
+                ]
+            },
+            axisCalibrationMode: {
+                title: 'Sensor Axis',
+                body: [
+                    'Chooses how detector pixel index maps to the x-axis. Pixel index is safest when no calibration is known. Linear wavelength is an operator assumption. Polynomial wavelength uses fitted calibration coefficients.',
+                    'Raman processing requires a wavelength axis, so use a calibrated or imported wavelength column for meaningful Raman shifts.',
+                    'Typical workflow: use Pixel index while debugging, then switch to Polynomial wavelength once your calibration coefficients are known.'
+                ]
+            },
+            wavelengthMin: {
+                title: 'Linear Range',
+                body: [
+                    'Defines a simple linear wavelength mapping from the first detector pixel to the last detector pixel.',
+                    'This is useful as a rough assumption, but it is not a substitute for a real wavelength calibration. Nonlinear optics and detector alignment can shift peaks.',
+                    'Typical range for this setup may be around 400-580 nm or the measured range of your calibrated reference file.'
+                ]
+            },
+            calibrationC0: {
+                title: 'Polynomial Coefficients',
+                body: [
+                    'Defines the wavelength calibration formula: wavelength_nm = c0 + c1*pixel + c2*pixel^2 + c3*pixel^3.',
+                    'Use coefficients from a least-squares fit against known spectral lines. This is the preferred calibration mode when you have reference-lamp data.',
+                    'Typical values are instrument-specific. c0 is near the wavelength at pixel 0, c1 is the main nm-per-pixel slope, and c2/c3 capture curvature.'
+                ]
+            },
+            baudRate: {
+                title: 'Serial Baud Rate',
+                body: [
+                    'Controls the serial communication speed. The browser port and the spectrometer must use the same baud rate or communication will fail.',
+                    'Typical setting is 9600 baud for compatibility. Higher rates can improve transfer speed if the device has already been configured for them.',
+                    'Changing this while scanning can interrupt communication, so stop acquisition before applying a new baud rate.'
+                ]
+            },
+            analysisEnabled: {
+                title: 'Enable Analysis',
+                body: [
+                    'Turns the Raman processing pipeline on or off. When enabled, the chart shows processed Raman-shift data instead of only raw intensity versus wavelength or pixel.',
+                    'Requires a wavelength axis from calibration or an imported wavelength column.',
+                    'Disable it when you want to inspect raw detector counts directly.'
+                ]
+            },
+            ramanMin: {
+                title: 'Raman Range',
+                body: [
+                    'Limits the processed Raman shift range in cm^-1. This focuses baseline correction, normalization, and peak detection on the region of interest.',
+                    'Typical broad range is 0-3400 cm^-1. Fingerprint-region work often focuses roughly on 200-1800 cm^-1.',
+                    'Narrowing the range can make peak labels and normalization more stable.'
+                ]
+            },
+            spikeEnabled: {
+                title: 'Remove Spikes',
+                body: [
+                    'Detects and interpolates narrow isolated spikes, such as cosmic-ray-like artifacts or serial glitches.',
+                    'Use it when a spectrum has single-pixel needle artifacts. Disable it if real peaks are extremely narrow and could be mistaken for spikes.',
+                    'The threshold controls how aggressive the detection is; higher values remove fewer spikes.'
+                ]
+            },
+            baselineMethod: {
+                title: 'Baseline',
+                body: [
+                    'Chooses the background/baseline estimation method before peak detection. Baseline removal helps separate Raman peaks from fluorescence or broad background.',
+                    'SNIP is usually a good first choice. ALS and arPLS can work better on smooth fluorescence backgrounds but may require lambda tuning.',
+                    'Use None when inspecting raw processed behavior or when the input is already baseline-corrected.'
+                ]
+            },
+            snipIterations: {
+                title: 'SNIP Iterations',
+                body: [
+                    'Controls the SNIP baseline window. More iterations remove broader background structure, but can also suppress broad real bands.',
+                    'Typical values are around 10-40. Start near 10-15 for narrow peaks and increase if broad fluorescence remains.',
+                    'Only affects SNIP baseline mode.'
+                ]
+            },
+            lambdaPower: {
+                title: 'ALS/arPLS Lambda',
+                body: [
+                    'Controls smoothness for ALS and arPLS baseline fitting as a power of ten. Higher values force a smoother baseline.',
+                    'Typical values are roughly 10^3 to 10^7 depending on spectrum length and background shape.',
+                    'If the baseline follows peaks too closely, increase lambda. If it is too flat to follow background curvature, decrease it.'
+                ]
+            },
+            smoothingMethod: {
+                title: 'Smoothing',
+                body: [
+                    'Chooses optional noise smoothing before peak detection. Smoothing can improve weak peak detection but can also blur narrow peaks.',
+                    'Savitzky-Golay is often good for spectra because it preserves peak shape better than a simple moving average.',
+                    'Use None when you need to inspect unfiltered data or tune other processing parameters.'
+                ]
+            },
+            smoothingWindow: {
+                title: 'Window / SG Order',
+                body: [
+                    'Window sets how many neighboring points are used for smoothing. SG Order sets the polynomial order for Savitzky-Golay smoothing.',
+                    'Typical SG settings are window 7-15 and order 2-3. The window should be odd and wider than random noise, but narrower than peaks you want to preserve.',
+                    'For moving average, the order field is ignored.'
+                ]
+            },
+            normalizationMethod: {
+                title: 'Normalization',
+                body: [
+                    'Scales spectra for easier comparison. Max normalization sets the strongest point to 1, area normalization scales total signal, and SNV standardizes mean and variance.',
+                    'Use Max = 1 for visual comparison and peak matching. Use Area = 1 when total spectral area should be comparable.',
+                    'Use None when absolute intensity matters.'
+                ]
+            },
+            peakHeightPercent: {
+                title: 'Peak Detection',
+                body: [
+                    'Controls automatic peak labeling. Height is a percentage threshold of the processed signal, and distance is the minimum separation between labeled peaks.',
+                    'Typical height thresholds are 5-20%. Increase height or distance to reduce clutter; decrease them to find weaker peaks.',
+                    'Detected peaks are shown in the chart and can be toggled from the plot legend.'
+                ]
+            }
+        };
+    }
+
+    setupHelpTooltips() {
+        const help = this.getHelpContent();
+        const tooltip = document.createElement('div');
+        tooltip.className = 'help-popover';
+        tooltip.setAttribute('role', 'tooltip');
+        document.body.appendChild(tooltip);
+
+        let hoverTimer = null;
+        let hideTimer = null;
+        let pinned = false;
+        let activeLabel = null;
+
+        const render = item => {
+            tooltip.innerHTML = [
+                `<h4>${this.escapeHtml(item.title)}</h4>`,
+                ...item.body.map(paragraph => `<p>${this.escapeHtml(paragraph)}</p>`)
+            ].join('');
+        };
+
+        const position = label => {
+            const rect = label.getBoundingClientRect();
+            const spacing = 12;
+            const maxHeight = Math.max(160, window.innerHeight - spacing * 2);
+            tooltip.style.maxHeight = `${maxHeight}px`;
+
+            const tooltipWidth = tooltip.offsetWidth;
+            const tooltipHeight = Math.min(tooltip.offsetHeight, maxHeight);
+            const spaceBelow = window.innerHeight - rect.bottom - spacing;
+            const spaceAbove = rect.top - spacing;
+            let top;
+
+            if (spaceBelow >= tooltipHeight || spaceBelow >= spaceAbove) {
+                top = rect.bottom + spacing;
+            } else {
+                top = rect.top - tooltipHeight - spacing;
+            }
+
+            top = Math.min(window.innerHeight - tooltipHeight - spacing, Math.max(spacing, top));
+            const left = Math.min(window.innerWidth - tooltipWidth - spacing, Math.max(spacing, rect.left));
+            tooltip.style.top = `${top}px`;
+            tooltip.style.left = `${left}px`;
+        };
+
+        const show = (label, item, keepOpen = false) => {
+            clearTimeout(hideTimer);
+            activeLabel = label;
+            pinned = keepOpen;
+            render(item);
+            tooltip.classList.add('open');
+            position(label);
+        };
+
+        const hide = () => {
+            if (pinned) return;
+            tooltip.classList.remove('open');
+            activeLabel = null;
+        };
+
+        const scheduleHide = () => {
+            clearTimeout(hideTimer);
+            hideTimer = setTimeout(() => {
+                if (tooltip.matches(':hover') || activeLabel?.matches(':hover')) return;
+                hide();
+            }, 160);
+        };
+
+        const labels = [...document.querySelectorAll('.control-group label')];
+        labels.forEach(label => {
+            const key = label.getAttribute('for') || label.textContent.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+            const item = help[key];
+            if (!item) return;
+
+            label.classList.add('help-label');
+            label.tabIndex = 0;
+
+            label.addEventListener('mouseenter', () => {
+                clearTimeout(hoverTimer);
+                hoverTimer = setTimeout(() => show(label, item), 450);
+            });
+            label.addEventListener('mouseleave', () => {
+                clearTimeout(hoverTimer);
+                scheduleHide();
+            });
+            label.addEventListener('focus', () => show(label, item));
+            label.addEventListener('blur', scheduleHide);
+            label.addEventListener('click', event => {
+                event.preventDefault();
+                if (pinned && activeLabel === label) {
+                    pinned = false;
+                    tooltip.classList.remove('open');
+                    return;
+                }
+                show(label, item, true);
+            });
+        });
+
+        tooltip.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+        tooltip.addEventListener('mouseleave', scheduleHide);
+
+        document.addEventListener('click', event => {
+            if (!pinned) return;
+            if (tooltip.contains(event.target) || event.target === activeLabel) return;
+            pinned = false;
+            tooltip.classList.remove('open');
+        });
+        window.addEventListener('resize', () => {
+            if (activeLabel && tooltip.classList.contains('open')) position(activeLabel);
+        });
+    }
+
+    openScanDB() {
+        if (!('indexedDB' in window)) {
+            return Promise.reject(new Error('IndexedDB is not available in this browser'));
+        }
+
+        if (this.scanDbPromise) return this.scanDbPromise;
+
+        this.scanDbPromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open(this.scanDbName, this.scanDbVersion);
+
+            request.onupgradeneeded = () => {
+                const db = request.result;
+                if (!db.objectStoreNames.contains(this.scanStoreName)) {
+                    const store = db.createObjectStore(this.scanStoreName, { keyPath: 'id' });
+                    store.createIndex('name', 'name', { unique: false });
+                    store.createIndex('savedAt', 'savedAt', { unique: false });
+                    store.createIndex('scanDate', 'metadata.scanDate', { unique: false });
+                }
+            };
+
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('Could not open local scan database'));
+        });
+
+        return this.scanDbPromise;
+    }
+
+    async putStoredScan(record) {
+        const db = await this.openScanDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(this.scanStoreName, 'readwrite');
+            tx.objectStore(this.scanStoreName).put(record);
+            tx.oncomplete = () => resolve(record);
+            tx.onerror = () => reject(tx.error || new Error('Could not save scan'));
+        });
+    }
+
+    async getStoredScans() {
+        const db = await this.openScanDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(this.scanStoreName, 'readonly');
+            const request = tx.objectStore(this.scanStoreName).getAll();
+            request.onsuccess = () => resolve(request.result || []);
+            request.onerror = () => reject(request.error || new Error('Could not read stored scans'));
+        });
+    }
+
+    async deleteStoredScanRecord(id) {
+        const db = await this.openScanDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(this.scanStoreName, 'readwrite');
+            tx.objectStore(this.scanStoreName).delete(id);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error || new Error('Could not delete scan'));
+        });
+    }
+
+    getCurrentScanMetadata() {
+        const metadata = this.currentScanMetadata || {};
+        const scanDate = metadata['Scan Date'] || metadata.scanDate || new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+        const name = metadata.name || metadata.Name || metadata.fileName || metadata['File Name'] || 'Unsaved scan';
+        const savedAt = metadata.savedAt || metadata['Saved At'] || null;
+        const integrationTime = Number.parseFloat(metadata['Integration Time'] ?? metadata.integrationTime);
+        const averages = Number.parseFloat(metadata['Number of Averages'] ?? metadata.averages);
+        const integrationInput = Number.parseFloat(document.getElementById('integrationTime')?.value);
+        const averageInput = Number.parseFloat(document.getElementById('averageCount')?.value);
+
+        return {
+            name,
+            scanDate,
+            savedAt,
+            integrationTime: Number.isFinite(integrationTime) ? integrationTime : (Number.isFinite(integrationInput) ? integrationInput : null),
+            averages: Number.isFinite(averages) ? averages : (Number.isFinite(averageInput) ? averageInput : null),
+            source: metadata.source || metadata.Source || 'current'
+        };
+    }
+
+    formatMetadataLine(metadata = this.getCurrentScanMetadata()) {
+        const name = metadata.name || 'Unsaved scan';
+        const scanDate = metadata.scanDate || 'unknown date';
+        const savedAt = metadata.savedAt || null;
+        const integration = Number.isFinite(metadata.integrationTime) ? `${metadata.integrationTime} ms` : 'unknown integration';
+        const averages = Number.isFinite(metadata.averages) ? `${metadata.averages} avg` : 'unknown avg';
+        return { name, scanDate, savedAt, integration, averages };
+    }
+
+    updateScanMetaLine() {
+        const line = document.getElementById('scanMetaLine');
+        if (!line) return;
+
+        if (!Array.isArray(this.currentData) || this.currentData.length === 0) {
+            line.innerHTML = '<span>No scan loaded</span>';
+            return;
+        }
+
+        const meta = this.formatMetadataLine();
+        line.innerHTML = [
+            '<div class="scan-meta-row">',
+            `<span>Name: <span class="scan-name-value" id="currentScanName" title="Double-click to rename">${this.escapeHtml(meta.name)}</span></span>`,
+            `<span>Scan: ${this.escapeHtml(meta.scanDate)}</span>`,
+            meta.savedAt ? `<span>Saved: ${this.escapeHtml(meta.savedAt)}</span>` : '',
+            '</div>',
+            '<div class="scan-meta-row">',
+            `<span>Integration: ${this.escapeHtml(meta.integration)}</span>`,
+            `<span>Averages: ${this.escapeHtml(meta.averages)}</span>`,
+            `<span>Points: ${this.currentData.length}</span>`,
+            '</div>'
+        ].join('');
+
+        document.getElementById('currentScanName')?.addEventListener('dblclick', () => {
+            this.renameCurrentScan();
+        });
+    }
+
+    escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    clonePlain(value) {
+        return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value));
+    }
+
+    updateStorageUI() {
+        const saveBtn = document.getElementById('saveScanBtn');
+        if (saveBtn) saveBtn.disabled = !(Array.isArray(this.currentData) && this.currentData.length > 0);
+        this.updateScanMetaLine();
+    }
+
+    openSaveScanDialog() {
+        if (!Array.isArray(this.currentData) || this.currentData.length === 0) {
+            this.log('No scan data available to save', 'error');
+            return;
+        }
+
+        const dialog = document.getElementById('saveScanDialog');
+        const input = document.getElementById('saveScanName');
+        const meta = this.getCurrentScanMetadata();
+        if (input) {
+            input.value = `Scan ${meta.scanDate}`;
+            setTimeout(() => input.focus(), 0);
+        }
+        if (dialog) dialog.classList.add('open');
+    }
+
+    closeSaveScanDialog() {
+        document.getElementById('saveScanDialog')?.classList.remove('open');
+    }
+
+    async saveCurrentScanToDB() {
+        const input = document.getElementById('saveScanName');
+        const name = input?.value?.trim();
+        if (!name) {
+            this.log('Enter a dataset name before saving', 'error');
+            input?.focus();
+            return;
+        }
+        if (!Array.isArray(this.currentData) || this.currentData.length === 0) {
+            this.log('No scan data available to save', 'error');
+            return;
+        }
+
+        const now = new Date().toISOString();
+        const record = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            name,
+            savedAt: now,
+            metadata: {
+                ...this.getCurrentScanMetadata(),
+                name,
+                savedAt: now
+            },
+            data: [...this.currentData],
+            wavelengths: Array.isArray(this.currentWavelengths) ? [...this.currentWavelengths] : null,
+            spectrumColumns: this.currentSpectrumColumns ? this.clonePlain(this.currentSpectrumColumns) : null,
+            calibrationMode: this.calibrationMode
+        };
+
+        try {
+            await this.putStoredScan(record);
+            this.currentStoredScanId = record.id;
+            this.currentScanMetadata = {
+                ...record.metadata,
+                name: record.name,
+                savedAt: record.savedAt
+            };
+            this.updateStorageUI();
+            this.closeSaveScanDialog();
+            this.log(`Saved scan "${name}" to local database`, 'success');
+            await this.refreshStoredScans();
+        } catch (error) {
+            this.log(`Save failed: ${error.message}`, 'error');
+        }
+    }
+
+    async refreshStoredScans() {
+        try {
+            this.storedScans = await this.getStoredScans();
+            this.renderStoredScans();
+        } catch (error) {
+            this.log(`Could not load stored scans: ${error.message}`, 'error');
+        }
+    }
+
+    renderStoredScans() {
+        const list = document.getElementById('storedScansList');
+        if (!list) return;
+
+        const sort = document.getElementById('storedScanSort')?.value || 'timestamp-desc';
+        const scans = [...this.storedScans];
+        scans.sort((a, b) => {
+            if (sort === 'name-asc') return a.name.localeCompare(b.name);
+            if (sort === 'name-desc') return b.name.localeCompare(a.name);
+            const timeA = Date.parse(a.savedAt || a.metadata?.scanDate || '') || 0;
+            const timeB = Date.parse(b.savedAt || b.metadata?.scanDate || '') || 0;
+            return sort === 'timestamp-asc' ? timeA - timeB : timeB - timeA;
+        });
+
+        if (!scans.length) {
+            list.textContent = 'No stored scans yet.';
+            return;
+        }
+
+        list.innerHTML = scans.map(scan => {
+            const meta = this.formatMetadataLine({
+                ...(scan.metadata || {}),
+                name: scan.name,
+                savedAt: scan.savedAt
+            });
+            return `
+                <div class="stored-scan-item">
+                    <div class="stored-scan-row">
+                        <div>
+                            <span class="stored-scan-name" data-rename-scan-id="${this.escapeHtml(scan.id)}" title="Double-click to rename">${this.escapeHtml(scan.name)}</span>
+                            <span class="stored-scan-meta">${this.escapeHtml(meta.scanDate)} · ${this.escapeHtml(meta.integration)} · ${this.escapeHtml(meta.averages)}</span>
+                        </div>
+                        <div class="stored-scan-actions">
+                            <button data-load-scan-id="${this.escapeHtml(scan.id)}">Load</button>
+                            <button class="delete-scan-btn" data-delete-scan-id="${this.escapeHtml(scan.id)}">Delete</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        list.querySelectorAll('[data-load-scan-id]').forEach(button => {
+            button.addEventListener('click', () => this.loadStoredScan(button.dataset.loadScanId));
+        });
+        list.querySelectorAll('[data-delete-scan-id]').forEach(button => {
+            button.addEventListener('click', () => this.deleteStoredScan(button.dataset.deleteScanId));
+        });
+        list.querySelectorAll('[data-rename-scan-id]').forEach(item => {
+            item.addEventListener('dblclick', () => this.renameStoredScan(item.dataset.renameScanId));
+        });
+    }
+
+    toggleStoredScans(force = null) {
+        const popout = document.getElementById('storedScansPopout');
+        if (!popout) return;
+        const open = force === null ? !popout.classList.contains('open') : Boolean(force);
+        popout.classList.toggle('open', open);
+        if (open) this.refreshStoredScans();
+    }
+
+    loadStoredScan(id) {
+        const scan = this.storedScans.find(item => item.id === id);
+        if (!scan) return;
+
+        this.currentStoredScanId = scan.id;
+        this.currentData = Array.isArray(scan.data) ? [...scan.data] : [];
+        this.currentWavelengths = Array.isArray(scan.wavelengths) ? [...scan.wavelengths] : null;
+        this.currentSpectrumColumns = scan.spectrumColumns ? this.clonePlain(scan.spectrumColumns) : null;
+        this.currentScanMetadata = {
+            name: scan.name,
+            savedAt: scan.savedAt,
+            'Scan Date': scan.metadata?.scanDate,
+            'Integration Time': scan.metadata?.integrationTime,
+            'Number of Averages': scan.metadata?.averages,
+            source: 'localDB'
+        };
+
+        if (Number.isFinite(scan.metadata?.integrationTime)) {
+            const input = document.getElementById('integrationTime');
+            if (input) input.value = String(scan.metadata.integrationTime);
+        }
+        if (Number.isFinite(scan.metadata?.averages)) {
+            const input = document.getElementById('averageCount');
+            if (input) input.value = String(scan.metadata.averages);
+        }
+
+        this.updateExportUI();
+        this.updateStorageUI();
+        this.updateChart({ final: true });
+        this.updateStatistics();
+        this.toggleStoredScans(false);
+        this.log(`Loaded stored scan "${scan.name}"`, 'success');
+    }
+
+    async renameCurrentScan() {
+        if (!Array.isArray(this.currentData) || this.currentData.length === 0) return;
+
+        if (!this.currentStoredScanId) {
+            const currentName = this.getCurrentScanMetadata().name;
+            const name = window.prompt('Rename current scan display name:', currentName);
+            if (!name?.trim()) return;
+            this.currentScanMetadata = {
+                ...(this.currentScanMetadata || {}),
+                name: name.trim()
+            };
+            this.updateStorageUI();
+            return;
+        }
+
+        await this.renameStoredScan(this.currentStoredScanId);
+    }
+
+    async renameStoredScan(id) {
+        const scan = this.storedScans.find(item => item.id === id);
+        if (!scan) return;
+
+        const name = window.prompt('Rename stored scan:', scan.name);
+        if (!name?.trim() || name.trim() === scan.name) return;
+
+        const renamed = {
+            ...scan,
+            name: name.trim(),
+            metadata: {
+                ...(scan.metadata || {}),
+                name: name.trim()
+            }
+        };
+
+        try {
+            await this.putStoredScan(renamed);
+            this.storedScans = this.storedScans.map(item => item.id === id ? renamed : item);
+            if (this.currentStoredScanId === id) {
+                this.currentScanMetadata = {
+                    ...(this.currentScanMetadata || {}),
+                    name: renamed.name
+                };
+                this.updateStorageUI();
+            }
+            this.renderStoredScans();
+            this.log(`Renamed stored scan to "${renamed.name}"`, 'success');
+        } catch (error) {
+            this.log(`Rename failed: ${error.message}`, 'error');
+        }
+    }
+
+    async deleteStoredScan(id) {
+        const scan = this.storedScans.find(item => item.id === id);
+        if (!scan) return;
+        if (!window.confirm(`Delete stored scan "${scan.name}"?`)) return;
+
+        try {
+            await this.deleteStoredScanRecord(id);
+            if (this.currentStoredScanId === id) {
+                this.currentStoredScanId = null;
+                this.currentScanMetadata = {
+                    ...(this.currentScanMetadata || {}),
+                    name: `${scan.name} (deleted from storage)`,
+                    savedAt: null
+                };
+                this.updateStorageUI();
+            }
+            this.log(`Deleted stored scan "${scan.name}"`, 'info');
+            await this.refreshStoredScans();
+        } catch (error) {
+            this.log(`Delete failed: ${error.message}`, 'error');
+        }
+    }
+
+    async exportAllScansJSON() {
+        try {
+            const scans = await this.getStoredScans();
+            const payload = {
+                exportedAt: new Date().toISOString(),
+                app: 'SpectroToy',
+                version: 1,
+                scanCount: scans.length,
+                scans
+            };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const link = document.createElement('a');
+
+            link.href = url;
+            link.download = `spectrotoy-scans-${timestamp}.json`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+
+            this.log(`Exported ${scans.length} stored scan(s) as JSON`, 'success');
+        } catch (error) {
+            this.log(`Export all failed: ${error.message}`, 'error');
+        }
     }
 
     pixelToRamanShift(pixel) {
@@ -608,6 +1827,7 @@ class SpectrographDiagnostic {
         if (exportBtn) {
             exportBtn.disabled = !(Array.isArray(this.currentData) && this.currentData.length > 0);
         }
+        this.updateStorageUI();
     }
 
     isAnalysisEnabled() {
@@ -634,7 +1854,7 @@ class SpectrographDiagnostic {
             smoothingWindow: numberValue('smoothingWindow', 7),
             smoothingOrder: numberValue('smoothingOrder', 3),
             normalization: document.getElementById('normalizationMethod')?.value || 'max',
-            peaksEnabled: document.getElementById('peaksEnabled')?.checked !== false,
+            peaksEnabled: true,
             peakHeightPercent: numberValue('peakHeightPercent', 12),
             peakDistance: numberValue('peakDistance', 30)
         };
@@ -1139,6 +2359,9 @@ class SpectrographDiagnostic {
         try {
             const text = await file.text();
             const parsed = this.parseCsvText(text);
+            parsed.metadata.name = file.name;
+            parsed.metadata.source = 'csv';
+            parsed.metadata.fileName = file.name;
             const importedIntegration = Number.parseFloat(parsed.metadata['Integration Time']);
             const importedAverages = Number.parseFloat(parsed.metadata['Number of Averages']);
             if (Number.isFinite(importedIntegration)) {
@@ -1261,7 +2484,13 @@ class SpectrographDiagnostic {
                 averaged: sourceColumns.averaged?.length === data.length ? sourceColumns.averaged : null,
                 background: sourceColumns.background?.length === data.length ? sourceColumns.background : null
             } : null;
-            this.currentScanMetadata = options.metadata || null;
+            this.currentScanMetadata = options.metadata || {
+                'Scan Date': new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                'Integration Time': document.getElementById('integrationTime')?.value || '',
+                'Number of Averages': document.getElementById('averageCount')?.value || '',
+                source: 'device'
+            };
+            this.currentStoredScanId = null;
             this.log('Chart data updated successfully', 'success');
             this.updateExportUI();
             this.updateChart({ final: true });
@@ -1277,7 +2506,13 @@ class SpectrographDiagnostic {
             const trailingBytes = this.binaryBuffer.slice(result.consumedBytes);
             this.currentData = result.values;
             this.currentSpectrumColumns = null;
-            this.currentScanMetadata = null;
+            this.currentScanMetadata = {
+                'Scan Date': new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+                'Integration Time': document.getElementById('integrationTime')?.value || '',
+                'Number of Averages': document.getElementById('averageCount')?.value || '',
+                source: 'device'
+            };
+            this.currentStoredScanId = null;
             this.resetBinaryScanState();
             this.consecutiveScanTimeouts = 0;
             this.log('Binary scan completed', 'success');
@@ -1395,8 +2630,7 @@ class SpectrographDiagnostic {
         this.chart.data.datasets[4].data = this.buildCursorLine(data, hotIndex, false);
 
         this.chart.options.scales.x.title.text = this.getXAxisLabel();
-        this.chart.options.scales.x.min = this.getXAxisValue(0);
-        this.chart.options.scales.x.max = this.getXAxisValue(this.pixelCount - 1);
+        this.setXDomain(this.getXAxisValue(0), this.getXAxisValue(this.pixelCount - 1));
         this.chart.options.scales.y.suggestedMin = 0;
         this.chart.options.scales.y.max = undefined;
         this.chart.options.scales.y.beginAtZero = true;
@@ -1408,8 +2642,6 @@ class SpectrographDiagnostic {
             return;
         }
 
-        const showRaw = document.getElementById('showRawSpectrum')?.checked !== false;
-        const showBaseline = document.getElementById('showBaselineSpectrum')?.checked !== false;
         const rawNorm = RamanProcessing.normalize01(analysis.raw);
         const baselineNorm = RamanProcessing.normalize01(analysis.baseline);
 
@@ -1417,7 +2649,6 @@ class SpectrographDiagnostic {
             x,
             y: rawNorm[index]
         }));
-        this.chart.data.datasets[0].hidden = !showRaw;
 
         this.chart.data.datasets[1].data = analysis.x.map((x, index) => ({
             x,
@@ -1429,7 +2660,6 @@ class SpectrographDiagnostic {
             x,
             y: baselineNorm[index]
         }));
-        this.chart.data.datasets[2].hidden = !showBaseline;
 
         this.chart.data.datasets[3].data = analysis.peaks.map(peak => ({
             x: peak.x,
@@ -1439,8 +2669,7 @@ class SpectrographDiagnostic {
         this.chart.data.datasets[4].data = [];
 
         this.chart.options.scales.x.title.text = 'Raman Shift (cm⁻¹)';
-        this.chart.options.scales.x.min = analysis.stats.rangeMin;
-        this.chart.options.scales.x.max = analysis.stats.rangeMax;
+        this.setXDomain(analysis.stats.rangeMin, analysis.stats.rangeMax);
         this.chart.options.scales.y.suggestedMin = undefined;
         this.chart.options.scales.y.max = undefined;
         this.chart.options.scales.y.beginAtZero = false;
@@ -1736,6 +2965,13 @@ document.addEventListener('DOMContentLoaded', () => {
     window.applyBaudRate = () => spectrograph.applyBaudRate();
     window.exportCubeRamanCSV = () => spectrograph.exportCubeRamanCSV();
     window.applyAxisCalibration = () => spectrograph.applyAxisCalibration();
+    window.findCalibrationPeaks = () => spectrograph.findCalibrationPeaks();
+    window.fitCalibrationPeaks = () => spectrograph.fitCalibrationPeaks();
+    window.openSaveScanDialog = () => spectrograph.openSaveScanDialog();
+    window.closeSaveScanDialog = () => spectrograph.closeSaveScanDialog();
+    window.saveCurrentScanToDB = () => spectrograph.saveCurrentScanToDB();
+    window.toggleStoredScans = (force) => spectrograph.toggleStoredScans(force);
+    window.exportAllScansJSON = () => spectrograph.exportAllScansJSON();
 
     const csvImportFile = document.getElementById('csvImportFile');
     if (csvImportFile) {
@@ -1746,6 +2982,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     spectrograph.setupCollapsibleSections();
+    spectrograph.setupHelpTooltips();
     spectrograph.loadControlSettings();
 
     const processingControlIds = [
@@ -1762,11 +2999,8 @@ document.addEventListener('DOMContentLoaded', () => {
         'smoothingWindow',
         'smoothingOrder',
         'normalizationMethod',
-        'peaksEnabled',
         'peakHeightPercent',
-        'peakDistance',
-        'showRawSpectrum',
-        'showBaselineSpectrum'
+        'peakDistance'
     ];
 
     processingControlIds.forEach(id => {
@@ -1799,13 +3033,33 @@ document.addEventListener('DOMContentLoaded', () => {
         'calibrationC0',
         'calibrationC1',
         'calibrationC2',
-        'calibrationC3'
+        'calibrationC3',
+        'calibrationPeakHeight',
+        'calibrationPeakDistance',
+        'calibrationFitOrder',
+        'calibrationPeakLimit'
     ].forEach(id => {
         const control = document.getElementById(id);
         if (!control) return;
         const eventName = control.tagName === 'SELECT' ? 'change' : 'input';
         control.addEventListener(eventName, () => spectrograph.saveControlSettings());
     });
+
+    const storedScanSort = document.getElementById('storedScanSort');
+    if (storedScanSort) {
+        storedScanSort.addEventListener('change', () => spectrograph.renderStoredScans());
+    }
+
+    const saveScanName = document.getElementById('saveScanName');
+    if (saveScanName) {
+        saveScanName.addEventListener('keydown', event => {
+            if (event.key === 'Enter') spectrograph.saveCurrentScanToDB();
+            if (event.key === 'Escape') spectrograph.closeSaveScanDialog();
+        });
+    }
+
+    spectrograph.updateStorageUI();
+    spectrograph.refreshStoredScans();
     
     // Setup resizable divider
     const divider = document.getElementById('resizableDivider');
