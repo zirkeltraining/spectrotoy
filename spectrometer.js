@@ -15,6 +15,8 @@ class SpectrographDiagnostic {
         this.currentSpectrumColumns = null;
         this.currentScanMetadata = null;
         this.currentStoredScanId = null;
+        this.backgroundSpectrum = null;
+        this.backgroundMismatchWarned = false;
         this.calibrationPeaks = [];
         this.lastCalibrationFit = null;
         this.xDomainMin = 0;
@@ -949,6 +951,63 @@ class SpectrographDiagnostic {
         if (summary) summary.textContent = message;
     }
 
+    captureBackground() {
+        if (this.hasActiveBackground()) {
+            this.log('Clear the active background before capturing a new one', 'error');
+            return;
+        }
+
+        if (!Array.isArray(this.currentData) || this.currentData.length === 0) {
+            this.log('No scan data available to capture as background', 'error');
+            return;
+        }
+
+        this.backgroundSpectrum = [...this.currentData];
+        this.backgroundMismatchWarned = false;
+        this.updateBackgroundUI();
+        this.log(`Captured background spectrum with ${this.backgroundSpectrum.length} points`, 'success');
+    }
+
+    clearBackground() {
+        if (!this.backgroundSpectrum) return;
+        this.backgroundSpectrum = null;
+        this.backgroundMismatchWarned = false;
+        this.updateBackgroundUI();
+        this.log('Cleared background spectrum', 'info');
+    }
+
+    hasActiveBackground() {
+        return Array.isArray(this.backgroundSpectrum) && this.backgroundSpectrum.length > 0;
+    }
+
+    applyBackgroundSubtraction(data) {
+        if (!this.hasActiveBackground()) {
+            return { data, applied: false };
+        }
+
+        if (this.backgroundSpectrum.length !== data.length) {
+            if (!this.backgroundMismatchWarned) {
+                this.log(`Background length mismatch: background has ${this.backgroundSpectrum.length} points, scan has ${data.length}`, 'error');
+                this.backgroundMismatchWarned = true;
+            }
+            return { data, applied: false };
+        }
+
+        return {
+            data: data.map((value, index) => value - this.backgroundSpectrum[index]),
+            applied: true
+        };
+    }
+
+    updateBackgroundUI() {
+        const active = this.hasActiveBackground();
+        const badge = document.getElementById('backgroundStatusBadge');
+        const clearBtn = document.getElementById('clearBackgroundBtn');
+
+        if (badge) badge.hidden = !active;
+        if (clearBtn) clearBtn.disabled = !active;
+    }
+
     syncAxisCalibrationUI() {
         const mode = document.getElementById('axisCalibrationMode')?.value || this.calibrationMode;
         const linearControls = document.getElementById('linearCalibrationControls');
@@ -1071,6 +1130,14 @@ class SpectrographDiagnostic {
                     'Sets how many scans are averaged by the device or acquisition workflow. More averages reduce random noise but make each measurement slower.',
                     'Typical values: 1 for alignment and live feedback, 5-25 for routine spectra, and higher values for weak or noisy signals.',
                     'Use Query to synchronize the UI with the device, then Set after changing the value.'
+                ]
+            },
+            background: {
+                title: 'Background Subtraction',
+                body: [
+                    'Capture Background stores the currently displayed spectrum as a dark/background reference for this session.',
+                    'While active, matching-length incoming scans are shown and exported after subtracting that captured background. The plot header shows when subtraction is active.',
+                    'Capture the background with the same integration, averaging, and optical setup as the measurement. Clear Background before capturing a new reference.'
                 ]
             },
             transferMode: {
@@ -2475,21 +2542,27 @@ class SpectrographDiagnostic {
                 }
             }
             
-            this.currentData = data;
+            const backgroundResult = this.applyBackgroundSubtraction(data);
+            this.currentData = backgroundResult.data;
             this.currentWavelengths = wavelengthData && wavelengthData.length === data.length ? wavelengthData : null;
             this.currentSpectrumColumns = sourceColumns ? {
                 pixels: sourceColumns.pixels?.length === data.length ? sourceColumns.pixels : null,
                 wavelengths: sourceColumns.wavelengths?.length === data.length ? sourceColumns.wavelengths : this.currentWavelengths,
                 sum: sourceColumns.sum?.length === data.length ? sourceColumns.sum : null,
                 averaged: sourceColumns.averaged?.length === data.length ? sourceColumns.averaged : null,
-                background: sourceColumns.background?.length === data.length ? sourceColumns.background : null
-            } : null;
+                background: backgroundResult.applied
+                    ? [...this.backgroundSpectrum]
+                    : (sourceColumns.background?.length === data.length ? sourceColumns.background : null)
+            } : (backgroundResult.applied ? { background: [...this.backgroundSpectrum] } : null);
             this.currentScanMetadata = options.metadata || {
                 'Scan Date': new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
                 'Integration Time': document.getElementById('integrationTime')?.value || '',
                 'Number of Averages': document.getElementById('averageCount')?.value || '',
                 source: 'device'
             };
+            if (backgroundResult.applied) {
+                this.currentScanMetadata.backgroundSubtracted = true;
+            }
             this.currentStoredScanId = null;
             this.log('Chart data updated successfully', 'success');
             this.updateExportUI();
@@ -2504,13 +2577,15 @@ class SpectrographDiagnostic {
         const result = this.parseBinaryData(this.binaryBuffer);
         if (result.complete) {
             const trailingBytes = this.binaryBuffer.slice(result.consumedBytes);
-            this.currentData = result.values;
-            this.currentSpectrumColumns = null;
+            const backgroundResult = this.applyBackgroundSubtraction(result.values);
+            this.currentData = backgroundResult.data;
+            this.currentSpectrumColumns = backgroundResult.applied ? { background: [...this.backgroundSpectrum] } : null;
             this.currentScanMetadata = {
                 'Scan Date': new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
                 'Integration Time': document.getElementById('integrationTime')?.value || '',
                 'Number of Averages': document.getElementById('averageCount')?.value || '',
-                source: 'device'
+                source: 'device',
+                backgroundSubtracted: backgroundResult.applied
             };
             this.currentStoredScanId = null;
             this.resetBinaryScanState();
@@ -2967,6 +3042,8 @@ document.addEventListener('DOMContentLoaded', () => {
     window.applyAxisCalibration = () => spectrograph.applyAxisCalibration();
     window.findCalibrationPeaks = () => spectrograph.findCalibrationPeaks();
     window.fitCalibrationPeaks = () => spectrograph.fitCalibrationPeaks();
+    window.captureBackground = () => spectrograph.captureBackground();
+    window.clearBackground = () => spectrograph.clearBackground();
     window.openSaveScanDialog = () => spectrograph.openSaveScanDialog();
     window.closeSaveScanDialog = () => spectrograph.closeSaveScanDialog();
     window.saveCurrentScanToDB = () => spectrograph.saveCurrentScanToDB();
@@ -3059,6 +3136,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     spectrograph.updateStorageUI();
+    spectrograph.updateBackgroundUI();
     spectrograph.refreshStoredScans();
     
     // Setup resizable divider
